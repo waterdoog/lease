@@ -1,0 +1,298 @@
+modules:
+  # ---- Tools for AI coding agents (Claude Code, Codex, Cursor...) via Atlassian's MCP server
+  rovo:mcp:
+    - key: lease-mcp
+      name: Lease
+      tools:
+        - find-work
+        - claim-work
+        - heartbeat
+        - release-work
+        - check-paths
+        - lease-status
+        - agent-report
+
+  # ---- A Rovo agent for the people who supervise those agents
+  rovo:agent:
+    - key: lease-tower
+      name: Lease Tower
+      description: Shows which Jira work AI coding agents hold, what is safe to hand to them, and what they did while you were away.
+      icon: resource:icons;tower.svg
+      prompt: |
+        You are Lease Tower, the air-traffic controller for AI coding agents working in this Jira site.
+        Coding agents (Claude Code, Codex, Cursor and others) must claim a Jira work item with a lease
+        before they change code. A lease names the files or folders the agent will change, expires unless
+        the agent sends heartbeats, and is refused when it would collide with another agent, a person
+        already working on the item, or a protected path.
+
+        You help the PEOPLE who supervise these agents. Typical questions:
+        - "What are agents working on right now?" -> call lease-status (projectKey if they name one).
+        - "What can I hand to agents?" -> call find-work and list the available items, and explain
+          why the unavailable ones are unavailable.
+        - "What did the agents do overnight / since yesterday?" -> call agent-report with hours (overnight = 14).
+          Lead with what needs a person (blocked, handed back, expired), then finished work with PR links,
+          then collisions prevented. Use the numbers the tool returns; never invent work items or PRs.
+        - "Is anyone touching src/payments?" -> call check-paths.
+        Rules: be brief and concrete. Quote work item keys. Never claim, renew or release leases yourself:
+        those tools are for coding agents. If a person wants to take work back from an agent, tell them to
+        use the Revoke button in the Lease panel on the work item.
+      conversationStarters:
+        - What are agents working on right now?
+        - What did the agents do overnight?
+        - What can I safely hand to agents in this project?
+      actions:
+        - lease-status
+        - find-work
+        - agent-report
+        - check-paths
+
+  action:
+    - key: find-work
+      name: Find work for agents
+      function: find-work-fn
+      actionVerb: GET
+      description: |
+        List Jira work items that an AI coding agent may take right now: marked safe for agents, not done,
+        not leased by another agent and not in progress with a person. Also lists the paths other agents
+        already hold. Call this before claim-work.
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: false
+          description: Jira project key such as "APP". Leave empty to search every project you can see.
+        limit:
+          title: Limit
+          type: integer
+          required: false
+          description: Maximum number of available work items to return (default 10).
+    - key: claim-work
+      name: Claim work (lease)
+      function: claim-work-fn
+      actionVerb: CREATE
+      description: |
+        Claim a Jira work item before changing code, naming the paths you will change. Refused if another
+        agent holds overlapping paths, a person is working on it, or a path is protected; then follow the
+        reasons and suggestions.
+      inputs:
+        issueKey:
+          title: Work item key
+          type: string
+          required: true
+          description: The Jira work item to claim, for example APP-42.
+        agent:
+          title: Agent name
+          type: string
+          required: true
+          description: Who is claiming, for example "claude-code", "codex" or "cursor". Add a suffix to tell parallel agents apart, such as "claude-code/2".
+        paths:
+          title: Paths
+          type: string
+          required: true
+          description: Comma-separated repository paths or globs you will change, for example "src/auth/**, tests/auth/**". A path without wildcards covers everything under it.
+        repo:
+          title: Repository
+          type: string
+          required: false
+          description: Repository name such as "acme/web". Paths only collide within the same repository.
+        intent:
+          title: Plan
+          type: string
+          required: false
+          description: One or two sentences on what you will change.
+        ttlMinutes:
+          title: Lease minutes
+          type: integer
+          required: false
+          description: How long the lease lasts without a heartbeat (default 30, capped by the project policy).
+    - key: heartbeat
+      name: Lease heartbeat
+      function: heartbeat-fn
+      actionVerb: UPDATE
+      description: |
+        Keep your lease alive and report progress, at least every 10 minutes. Add paths with addPaths before
+        editing outside the lease. If the result is LEASE_GONE, stop: the work was taken back or expired.
+      inputs:
+        leaseId:
+          title: Lease ID
+          type: string
+          required: true
+          description: The leaseId returned by claim-work.
+        note:
+          title: Progress note
+          type: string
+          required: false
+          description: One line on what you did since the last heartbeat.
+        addPaths:
+          title: Add paths
+          type: string
+          required: false
+          description: Comma-separated paths to add to the lease.
+        extendMinutes:
+          title: Extend minutes
+          type: integer
+          required: false
+          description: Keep the lease for this many minutes from now (capped by policy).
+    - key: release-work
+      name: Release work
+      function: release-work-fn
+      actionVerb: UPDATE
+      description: |
+        End a lease when you finish or stop. Give the outcome, a one-paragraph summary and the pull request
+        link. Lease posts this on the work item for the people reviewing your work.
+      inputs:
+        leaseId:
+          title: Lease ID
+          type: string
+          required: true
+          description: The leaseId returned by claim-work.
+        outcome:
+          title: Outcome
+          type: string
+          required: true
+          description: One of "done", "handed-back", "blocked" or "abandoned".
+        summary:
+          title: Summary
+          type: string
+          required: false
+          description: What you changed, or why you stopped and what a person needs to decide.
+        prUrl:
+          title: Pull request URL
+          type: string
+          required: false
+          description: Link to the pull request with the change.
+    - key: check-paths
+      name: Who holds these paths
+      function: check-paths-fn
+      actionVerb: GET
+      description: |
+        Before editing files, check whether another agent holds leases covering them.
+      inputs:
+        paths:
+          title: Paths
+          type: string
+          required: true
+          description: Comma-separated repository paths or globs.
+        repo:
+          title: Repository
+          type: string
+          required: false
+          description: Repository name such as "acme/web".
+    - key: lease-status
+      name: Active agent leases
+      function: lease-status-fn
+      actionVerb: GET
+      description: |
+        List the leases AI coding agents hold right now: work item, agent, person, paths, last heartbeat, expiry.
+      inputs:
+        issueKey:
+          title: Work item key
+          type: string
+          required: false
+          description: Only this work item.
+        projectKey:
+          title: Project key
+          type: string
+          required: false
+          description: Only this project.
+    - key: agent-report
+      name: What agents did
+      function: agent-report-fn
+      actionVerb: GET
+      description: |
+        Report what AI coding agents did in the last N hours: finished work with PR links, work that needs a
+        person (blocked, handed back, expired), collisions prevented, and leases still running.
+      inputs:
+        hours:
+          title: Hours
+          type: integer
+          required: false
+          description: How far back to look (default 12; overnight is about 14).
+        projectKey:
+          title: Project key
+          type: string
+          required: false
+          description: Only this project.
+
+  # ---- Jira UI
+  jira:issuePanel:
+    - key: lease-panel
+      resource: issue-panel
+      resolver:
+        function: resolver
+      render: native
+      title: Lease
+      icon: resource:icons;lock.svg
+  jira:globalPage:
+    - key: lease-tower-page
+      resource: tower-page
+      resolver:
+        function: resolver
+      render: native
+      title: Lease — agent control tower
+      icon: resource:icons;tower.svg
+
+  # ---- Background
+  scheduledTrigger:
+    - key: lease-sweeper
+      function: sweep-fn
+      interval: fiveMinute
+  trigger:
+    - key: lease-issue-updated
+      function: issue-updated-fn
+      events:
+        - avi:jira:updated:issue
+      filter:
+        ignoreSelf: true
+
+  function:
+    - key: find-work-fn
+      handler: index.findWork
+    - key: claim-work-fn
+      handler: index.claimWork
+    - key: heartbeat-fn
+      handler: index.heartbeat
+    - key: release-work-fn
+      handler: index.releaseWork
+    - key: check-paths-fn
+      handler: index.checkPaths
+    - key: lease-status-fn
+      handler: index.leaseStatus
+    - key: agent-report-fn
+      handler: index.agentReport
+    - key: resolver
+      handler: index.resolverHandler
+    - key: sweep-fn
+      handler: index.sweep
+    - key: issue-updated-fn
+      handler: index.onIssueUpdated
+
+resources:
+  - key: issue-panel
+    path: src/frontend/issue-panel.jsx
+  - key: tower-page
+    path: src/frontend/tower-page.jsx
+  - key: icons
+    path: static/icons
+
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - read:jira-user
+    - storage:app
+
+app:
+  id: ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000
+  runtime:
+    name: nodejs22.x
+  storage:
+    entities:
+      - name: board
+        attributes:
+          rev:
+            type: integer
+          leases:
+            type: any
+          updatedAt:
+            type: float
