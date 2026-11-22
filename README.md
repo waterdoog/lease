@@ -85,7 +85,7 @@ another.
 * **Triggers**: `scheduledTrigger` (every 5 minutes) reclaims silent leases;
   `avi:jira:updated:issue` keeps leases in step with Jira.
 * **A lease table that cannot double-grant, sharded per repository.** Each repository's
-  active leases live in one Custom Entity record with a revision number (paths only collide
+  active leases live in their own Custom Entity record with a revision number (paths only collide
   within a repository, so unrelated repositories never contend and each has its own size
   budget). Each change reads it (strictly consistent), decides with
   pure functions (`src/core/leases.js`), and commits with a conditional transaction on the
