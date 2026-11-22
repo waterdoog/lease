@@ -1,0 +1,28 @@
+# .github/workflows/lease.yml — fail pull requests that change files outside their Lease.
+# Secrets: JIRA_BASE_URL (https://your-site.atlassian.net), JIRA_EMAIL, JIRA_API_TOKEN (read-only user is enough).
+name: Lease scope check
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+jobs:
+  lease:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: waterdoog/lease
+          path: .lease-check
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node .lease-check/skill/ci/lease-pr-check.mjs
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: origin/${{ github.base_ref }}

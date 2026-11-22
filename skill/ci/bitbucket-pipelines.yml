@@ -1,0 +1,11 @@
+# Add to bitbucket-pipelines.yml. Repository variables: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN (secured).
+pipelines:
+  pull-requests:
+    '**':
+      - step:
+          name: Lease scope check
+          image: node:22
+          script:
+            - git fetch origin "$BITBUCKET_PR_DESTINATION_BRANCH"
+            - git clone --depth 1 https://github.com/waterdoog/lease.git .lease-check
+            - BASE_REF="origin/$BITBUCKET_PR_DESTINATION_BRANCH" node .lease-check/skill/ci/lease-pr-check.mjs

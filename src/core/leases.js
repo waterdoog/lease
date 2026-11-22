@@ -19,6 +19,10 @@ export const DEFAULT_POLICY = Object.freeze({
   respectHumanInProgress: true,
   protectedPaths: ['**/migrations/**', 'infra/**', '.github/workflows/**'],
   personReserveHours: 8,
+  // Files nearly every change touches. Claims on them never block each other:
+  // they are granted with a note to keep changes additive and let git merge.
+  sharedPaths: ['**/package.json', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock', '**/index.ts', '**/index.js', '**/*.d.ts', '**/CHANGELOG.md'],
+  defaultRepo: '',
 });
 
 // One record holds every active lease on the site (that is what makes grants
@@ -39,6 +43,8 @@ export function resolvePolicy(stored) {
   p.allowWholeRepo = p.allowWholeRepo === true;
   p.respectHumanInProgress = p.respectHumanInProgress !== false;
   p.personReserveHours = int(p.personReserveHours, 1, 24, DEFAULT_POLICY.personReserveHours);
+  p.sharedPaths = parsePathList(p.sharedPaths || []).patterns;
+  p.defaultRepo = p.defaultRepo ? normalizeRepo(p.defaultRepo) : '';
   return p;
 }
 
@@ -93,14 +99,31 @@ export function leaseForIssue(board, issueKey, now) {
   return activeLeases(board, now).find((l) => l.issueKey === issueKey) || null;
 }
 
-function collisionsWith(board, { repo, patterns, excludeId }, now) {
+// A claim on one concrete shared file (package.json, a barrel index.ts...).
+export function isSharedClaim(pattern, policy) {
+  return !/[*?]/.test(pattern) && (policy?.sharedPaths || []).some((sp) => pathMatches(sp, pattern));
+}
+
+// Overlaps with other active leases in the same repository. Pairs where either
+// side is a shared-file claim do not block; they are returned as `shared`.
+function collisionsWith(board, { repo, patterns, excludeId }, now, policy) {
   const hits = [];
+  const shared = [];
   for (const l of activeLeases(board, now)) {
     if (l.id === excludeId || l.repo !== repo) continue;
-    const pairs = overlaps(patterns, l.paths);
-    if (pairs.length) hits.push({ lease: l, pairs });
+    const all = overlaps(patterns, l.paths);
+    const blocking = all.filter((p) => !isSharedClaim(p.mine, policy) && !isSharedClaim(p.theirs, policy));
+    if (blocking.length) hits.push({ lease: l, pairs: blocking });
+    else if (all.length) shared.push({ lease: l, pairs: all });
   }
+  hits.shared = shared;
   return hits;
+}
+
+function sharedNotes(hits) {
+  return (hits.shared || []).map(
+    (h) => `Shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} also in ${h.lease.issueKey} (${describeHolder(h.lease)}): keep your changes additive so git can merge them.`
+  );
 }
 
 function protectedHits(patterns, policy) {
@@ -132,7 +155,7 @@ export function claim(board0, req, ctx) {
   const policy = resolvePolicy(rawPolicy);
   const { board, expired } = sweep(board0, now);
   const agent = normalizeAgent(req.agent);
-  const repo = normalizeRepo(req.repo);
+  const repo = normalizeRepo(req.repo || policy.defaultRepo);
   const { patterns, errors } = parsePathList(req.paths);
   const done = (decision) => ({ board, expired, decision });
 
@@ -201,7 +224,7 @@ export function claim(board0, req, ctx) {
       )
     );
 
-  const hits = collisionsWith(board, { repo, patterns }, now);
+  const hits = collisionsWith(board, { repo, patterns }, now, policy);
   if (hits.length) {
     const retryAfter = Math.min(...hits.map((h) => h.lease.expiresAt));
     return done(
@@ -244,7 +267,7 @@ export function claim(board0, req, ctx) {
   };
   const next = clone(board);
   next.leases[lease.id] = lease;
-  return { board: next, expired, decision: { granted: true, code: 'GRANTED', lease } };
+  return { board: next, expired, decision: { granted: true, code: 'GRANTED', lease, reasons: sharedNotes(hits) } };
 }
 
 // A person reserves the paths they are changing by hand for a work item, so
@@ -254,7 +277,7 @@ export function reserve(board0, req, ctx) {
   const policy = resolvePolicy(rawPolicy);
   const { board, expired } = sweep(board0, now);
   const done = (decision, b = board) => ({ board: b, expired, decision });
-  const repo = normalizeRepo(req.repo);
+  const repo = normalizeRepo(req.repo || policy.defaultRepo);
   const { patterns, errors } = parsePathList(req.paths);
   if (!accountId) return done(deny('BAD_REQUEST', ['Sign in to reserve paths.']));
   if (errors.length) return done(deny('BAD_PATHS', errors));
@@ -268,7 +291,7 @@ export function reserve(board0, req, ctx) {
   if (existing && !(existing.kind === PERSON && existing.ownerAccountId === accountId))
     return done(deny('ISSUE_LEASED', [`${describeHolder(existing)} holds ${issue.key}. Take it back first if you want to work on it yourself.`], { holder: publicLease(existing) }));
 
-  const hits = collisionsWith(board, { repo, patterns, excludeId: existing?.id }, now);
+  const hits = collisionsWith(board, { repo, patterns, excludeId: existing?.id }, now, policy);
   if (hits.length)
     return done(
       deny(
@@ -299,7 +322,7 @@ export function reserve(board0, req, ctx) {
   };
   const next = clone(board);
   next.leases[lease.id] = lease;
-  return done({ granted: true, code: existing ? 'RESERVATION_UPDATED' : 'RESERVED', lease }, next);
+  return done({ granted: true, code: existing ? 'RESERVATION_UPDATED' : 'RESERVED', lease, reasons: sharedNotes(hits) }, next);
 }
 
 function ownLease(board, leaseId, accountId, now) {
@@ -333,7 +356,7 @@ export function heartbeat(board0, req, ctx) {
       const prot = protectedHits(added, policy);
       if (prot.length)
         return done(deny('PROTECTED_PATH', prot.map((p) => `"${p.mine}" touches protected path "${p.theirs}".`)));
-      const hits = collisionsWith(board, { repo: lease.repo, patterns: added, excludeId: lease.id }, now);
+      const hits = collisionsWith(board, { repo: lease.repo, patterns: added, excludeId: lease.id }, now, policy);
       if (hits.length)
         return done(
           deny(
@@ -430,11 +453,16 @@ export function markHumanOverlap(board, leaseId) {
 }
 
 // Who holds anything overlapping these paths right now?
-export function whoHolds(board, { paths, repo }, now) {
+export function whoHolds(board, { paths, repo }, now, rawPolicy) {
+  const policy = resolvePolicy(rawPolicy);
   const { patterns, errors } = parsePathList(paths);
-  if (errors.length) return { errors, holders: [] };
-  const hits = collisionsWith(board, { repo: normalizeRepo(repo), patterns }, now);
-  return { errors: [], holders: hits.map((h) => ({ ...publicLease(h.lease), overlaps: h.pairs })) };
+  if (errors.length) return { errors, holders: [], shared: [] };
+  const hits = collisionsWith(board, { repo: normalizeRepo(repo || policy.defaultRepo), patterns }, now, policy);
+  return {
+    errors: [],
+    holders: hits.map((h) => ({ ...publicLease(h.lease), overlaps: h.pairs })),
+    shared: hits.shared.map((h) => ({ ...publicLease(h.lease), overlaps: h.pairs })),
+  };
 }
 
 export function publicLease(l) {

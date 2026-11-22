@@ -255,3 +255,26 @@ test('site-wide cap keeps the lease record small', () => {
   assert.ok(JSON.stringify(b).length < 120 * 1024, 'stays well under the Custom Entity value limit');
   assert.equal(claimOn(b, 'APP-999', 'other', { agent: 'late' }).decision.code, 'SITE_FULL');
 });
+
+test('shared files (package.json, barrel index.ts) never block, but are flagged', () => {
+  const a = claimOn(L.emptyBoard(), 'APP-1', 'src/auth/**, package.json', { repo: 'acme/web' });
+  assert.equal(a.decision.code, 'GRANTED');
+  const b = claimOn(a.board, 'APP-2', 'src/ui/**, package.json, src/auth/index.ts', { agent: 'codex', repo: 'acme/web' });
+  assert.equal(b.decision.code, 'GRANTED', JSON.stringify(b.decision));
+  assert.match(b.decision.reasons.join(' '), /keep your changes additive/);
+  // a real file in the other lease still collides
+  assert.equal(claimOn(b.board, 'APP-3', 'src/auth/session.ts', { agent: 'cursor', repo: 'acme/web' }).decision.code, 'PATH_COLLISION');
+  // a glob over shared names is not a shared claim
+  assert.equal(L.isSharedClaim('src/**/index.ts', L.resolvePolicy()), false);
+  assert.equal(L.isSharedClaim('apps/web/package.json', L.resolvePolicy()), true);
+  const who = L.whoHolds(b.board, { paths: 'package.json', repo: 'acme/web' }, T0);
+  assert.equal(who.holders.length, 0);
+  assert.equal(who.shared.length, 2);
+});
+
+test('project default repository is used when an agent omits it', () => {
+  const pol = { defaultRepo: 'https://github.com/acme/web.git' };
+  const a = claimOn(L.emptyBoard(), 'APP-1', 'src/auth', { policy: pol });
+  assert.equal(a.decision.lease.repo, 'acme/web');
+  assert.equal(claimOn(a.board, 'APP-2', 'src/auth/x.ts', { agent: 'codex', repo: 'acme/web', policy: pol }).decision.code, 'PATH_COLLISION');
+});

@@ -77,3 +77,5 @@ function handle(who, path, opts = {}) {
 
 const client = (who) => ({ requestJira: async (path, opts) => handle(who, path, opts) });
 export default { asUser: () => client('user'), asApp: () => client('app') };
+
+export const getAppContext = () => ({ appAri: { appId: '11111111-2222-3333-4444-555555555555' }, appVersion: '1.0.0' });

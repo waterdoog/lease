@@ -103,7 +103,8 @@ test('agent B goes silent: after its lease expires the work returns to the queue
   const st = await app.leaseStatus({ projectKey: 'APP' }, as('yu'));
   assert.deepEqual(st.activeLeases.map((l) => l.issueKey), ['APP-101']);
   assert.match(jira.comments['APP-103'].at(-1).text, /Lease expired/);
-  assert.equal(jira.props['APP-103'], undefined);
+  assert.equal(jira.props['APP-103'].held, false);
+  assert.equal(jira.props['APP-103'].state, 'expired', 'the property keeps the last lease for CI and JQL');
 });
 
 test('a person takes work back; the agent is stopped on its next heartbeat', async () => {
@@ -246,4 +247,16 @@ test('simulate two agents runs the real flow on sample work', async () => {
   assert.equal(sim.ok, true, JSON.stringify(sim));
   const codes = sim.steps.map((s) => (s.granted ? 'granted' : s.result));
   assert.deepEqual(codes, ['granted', 'granted', 'PATH_COLLISION', 'granted', 'PROTECTED_PATH']);
+});
+
+test('app info gives the MCP URL for this installation', async () => {
+  const info = await app.resolverHandler('appInfo', {}, {});
+  assert.equal(info.mcpUrl, 'https://mcp.atlassian.com/forge/11111111-2222-3333-4444-555555555555');
+});
+
+test('released work keeps its paths on the issue property for CI', async () => {
+  const p = jira.props['APP-102'];
+  assert.equal(p.state, 'released');
+  assert.deepEqual(p.paths, ['src/auth/session.ts']);
+  assert.equal(p.prUrl, 'https://github.com/acme/web/pull/88');
 });

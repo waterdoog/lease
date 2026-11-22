@@ -123,9 +123,9 @@ function LeaseCard({ lease, now, mine, onRevoke, onRelease }) {
   );
 }
 
-function ReserveForm({ onReserve, busy }) {
+function ReserveForm({ onReserve, busy, defaultRepo }) {
   const [paths, setPaths] = useState('');
-  const [repo, setRepo] = useState('');
+  const [repo, setRepo] = useState(defaultRepo || '');
   return (
     <Stack space="space.075">
       <Text>
@@ -248,6 +248,7 @@ function App() {
           ) : null}
           <ReserveForm
             busy={busy}
+            defaultRepo={policy.defaultRepo}
             onReserve={(paths, repo) =>
               act(() => invoke('reserve', { issueKey: data.issueKey, paths, repo }).then((r) => (r.granted ? { ok: true, text: 'Reserved. Agents on other work items will be refused for these paths.' } : r)))
             }

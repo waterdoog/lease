@@ -26,7 +26,7 @@ async function afterExpired(expired, now) {
   for (const l of expired) {
     await quietly('history', () => store.saveHistory({ ...l, endedAt: now, outcome: 'expired' }));
     await quietly('event', () => store.logEvent({ type: 'expired', issueKey: l.issueKey, agent: l.agent, owner: l.ownerName, at: now }));
-    await quietly('property', () => jira.setLeaseProperty(l.issueKey, null));
+    await quietly('property', () => jira.setLeaseProperty(l.issueKey, leaseProperty({ ...l, endedAt: now, outcome: 'expired' }, 'expired')));
     await quietly('comment', () =>
       jira.comment(l.issueKey, [
         [{ text: 'Lease expired. ', strong: true }, `${l.agent}${l.ownerName ? ` (for ${l.ownerName})` : ''} stopped sending heartbeats, so this work item is back in the queue for people and agents.`],
@@ -36,8 +36,23 @@ async function afterExpired(expired, now) {
   }
 }
 
-function leaseProperty(l) {
-  return { held: true, agent: l.agent, owner: l.ownerName, expiresAt: core.fmtTime(l.expiresAt), paths: l.paths.slice(0, 10) };
+// Mirrored onto the work item as the `lease` issue property. JQL can search it
+// (issue.property[lease].held = true) and CI can check a pull request against
+// it (skill/ci/lease-pr-check.mjs), including after the lease has ended.
+function leaseProperty(l, state = 'held') {
+  return {
+    held: state === 'held',
+    state,
+    leaseId: l.id,
+    kind: l.kind === core.PERSON ? 'person' : 'agent',
+    agent: l.agent,
+    owner: l.ownerName,
+    repo: l.repo,
+    paths: l.paths,
+    mustNotTouch: l.excluded || [],
+    expiresAt: core.fmtTime(l.expiresAt),
+    ...(state !== 'held' ? { endedAt: core.fmtTime(l.endedAt || Date.now()), outcome: l.outcome || state, prUrl: l.prUrl || null } : {}),
+  };
 }
 
 export async function claimWork(input, { accountId }) {
@@ -153,7 +168,7 @@ export async function releaseLease(input, { accountId }) {
     const l = d.lease;
     await quietly('history', () => store.saveHistory(l));
     await quietly('event', () => store.logEvent({ type: 'released', outcome: l.outcome, issueKey: l.issueKey, agent: l.agent, owner: l.ownerName, prUrl: l.prUrl, scopeClean: l.scopeCheck ? l.scopeCheck.clean : null, at: now }));
-    await quietly('property', () => jira.setLeaseProperty(l.issueKey, null));
+    await quietly('property', () => jira.setLeaseProperty(l.issueKey, leaseProperty(l, 'released')));
     const mins = Math.max(1, Math.round((l.endedAt - l.createdAt) / 60000));
     await quietly('comment', () =>
       jira.comment(l.issueKey, [
@@ -195,7 +210,7 @@ export async function revokeLease(input, { accountId }) {
       await quietly('tombstone', () =>
         kvs.set(`revoked:${d.lease.id}`, { leaseId: d.lease.id, issueKey: d.lease.issueKey, agent: d.lease.agent, byName: me.displayName, reason: d.lease.reason, at: now }, { ttl: { unit: 'DAYS', value: 2 } })
       );
-    await quietly('property', () => jira.setLeaseProperty(d.lease.issueKey, null));
+    await quietly('property', () => jira.setLeaseProperty(d.lease.issueKey, leaseProperty(d.lease, 'revoked')));
     await quietly('comment', () =>
       jira.comment(d.lease.issueKey, [
         [{ text: 'Taken back from the agent. ', strong: true }, `${me.displayName || 'A person'} revoked ${d.lease.agent}'s lease${d.lease.reason ? `: ${d.lease.reason}` : '.'}`],
@@ -217,7 +232,7 @@ export async function reservePaths(input, { accountId }) {
   await quietly('event', () =>
     store.logEvent({ type: d.granted ? 'reserved' : 'denied', code: d.code, issueKey, agent: core.PERSON, owner: me.displayName, reasons: d.reasons, at: now })
   );
-  if (d.granted) await quietly('property', () => jira.setLeaseProperty(issueKey, { ...leaseProperty(d.lease), person: true }));
+  if (d.granted) await quietly('property', () => jira.setLeaseProperty(issueKey, leaseProperty(d.lease)));
   return present(d);
 }
 
@@ -251,12 +266,13 @@ export async function simulateAgents(projectKey, { accountId }) {
 
 export async function checkPaths(input) {
   const board = await store.readBoard();
-  const res = core.whoHolds(board, input, Date.now());
+  const res = core.whoHolds(board, input, Date.now(), null);
   if (res.errors.length) return { ok: false, reasons: res.errors };
   return {
     ok: true,
     clear: res.holders.length === 0,
     holders: res.holders,
+    sharedWith: res.shared,
     advice: res.holders.length
       ? 'Do not edit files under these paths: another agent holds them. Ask its person, or wait for the lease to end.'
       : 'Nobody holds these paths. If you are about to change them, widen your own lease first (heartbeat with addPaths).',
@@ -389,7 +405,7 @@ export async function onIssueChanged(issueKey) {
       await quietly('history', () => store.saveHistory(l));
       await quietly('event', () => store.logEvent({ type: 'released', outcome: l.outcome, issueKey, agent: l.agent, at: now }));
     }
-    await quietly('property', () => jira.setLeaseProperty(issueKey, null));
+    for (const l of result.ended) await quietly('property', () => jira.setLeaseProperty(issueKey, leaseProperty(l, 'released')));
     return 'released';
   }
   const humanStarted =

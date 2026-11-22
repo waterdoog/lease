@@ -1,6 +1,7 @@
 // Forge entry points: Rovo actions (also exposed as MCP tools), UI resolvers
 // and triggers. They only translate inputs; the logic lives in service.js.
 import Resolver from '@forge/resolver';
+import { getAppContext } from '@forge/api';
 import * as svc from './service.js';
 
 function accountOf(payload, context) {
@@ -84,6 +85,16 @@ resolver.define('reserve', async ({ payload, context }) =>
 );
 resolver.define('releaseMine', async ({ payload, context }) => svc.releaseLease({ leaseId: payload.leaseId, outcome: 'handed-back', summary: 'Released by hand.' }, { accountId: context.accountId }));
 resolver.define('simulate', async ({ payload, context }) => svc.simulateAgents(payload.projectKey, { accountId: context.accountId }));
+
+resolver.define('appInfo', async () => {
+  let appId = null;
+  try {
+    appId = getAppContext().appAri.appId;
+  } catch (e) {
+    console.warn(`app context: ${e.message}`);
+  }
+  return { appId, mcpUrl: appId ? `https://mcp.atlassian.com/forge/${appId}` : null };
+});
 
 resolver.define('getPolicy', async ({ payload }) => svc.getPolicy(payload.projectKey));
 resolver.define('savePolicy', async ({ payload }) => svc.savePolicy(payload.projectKey, payload.policy));

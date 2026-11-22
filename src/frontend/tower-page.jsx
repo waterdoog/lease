@@ -27,8 +27,6 @@ import ForgeReconciler, {
 import { invoke, router } from '@forge/bridge';
 import { ago, until } from './format';
 
-// Filled in at release time: the MCP endpoint is https://mcp.atlassian.com/forge/<app UUID from manifest.yml>.
-const MCP_URL = 'https://mcp.atlassian.com/forge/APP_UUID';
 const REPO_URL = 'https://github.com/waterdoog/lease';
 
 const tile = xcss({ padding: 'space.200', borderRadius: 'border.radius.200', backgroundColor: 'color.background.neutral.subtle', minWidth: '150px' });
@@ -46,9 +44,9 @@ function Stat({ label, value, tone }) {
 }
 
 const issueLink = (key) => (
-  <Link href={`/browse/${key}`} openNewTab={false}>
+  <Button appearance="link" spacing="none" onClick={() => router.navigate(`/browse/${key}`)}>
     {key}
-  </Link>
+  </Button>
 );
 
 function LiveTable({ leases, now }) {
@@ -174,6 +172,10 @@ function PolicyEditor() {
               <Textfield id="ttl" type="number" value={String(policy.defaultTtlMinutes)} onChange={set('defaultTtlMinutes')} />
             </Stack>
             <Stack space="space.050">
+              <Label labelFor="repo">Default repository</Label>
+              <Textfield id="repo" value={policy.defaultRepo || ''} onChange={set('defaultRepo')} placeholder="acme/web" />
+            </Stack>
+            <Stack space="space.050">
               <Label labelFor="maxttl">Longest lease (minutes)</Label>
               <Textfield id="maxttl" type="number" value={String(policy.maxTtlMinutes)} onChange={set('maxTtlMinutes')} />
             </Stack>
@@ -181,6 +183,10 @@ function PolicyEditor() {
           <Stack space="space.050">
             <Label labelFor="prot">Protected paths: only people may change these (one per line)</Label>
             <TextArea id="prot" value={(policy.protectedPaths || []).join('\n')} onChange={(e) => setPolicy({ ...policy, protectedPaths: e.target.value.split('\n') })} />
+          </Stack>
+          <Stack space="space.050">
+            <Label labelFor="shared">Shared files: claims on these never block each other (one per line)</Label>
+            <TextArea id="shared" value={(policy.sharedPaths || []).join('\n')} onChange={(e) => setPolicy({ ...policy, sharedPaths: e.target.value.split('\n') })} />
           </Stack>
           <Inline space="space.100" alignBlock="center">
             <Toggle id="req" isChecked={policy.requireLabel} onChange={() => setPolicy({ ...policy, requireLabel: !policy.requireLabel })} />
@@ -202,6 +208,10 @@ function PolicyEditor() {
 
 function TryIt() {
   const [form, setForm] = useState({ issueKey: '', agent: 'claude-code', paths: 'src/auth/**', repo: 'acme/web' });
+  const [mcpUrl, setMcpUrl] = useState(null);
+  useEffect(() => {
+    invoke('appInfo').then((i) => setMcpUrl(i.mcpUrl)).catch(() => null);
+  }, []);
   const [result, setResult] = useState(null);
   const [sampleKey, setSampleKey] = useState('');
   const [sample, setSample] = useState(null);
@@ -217,8 +227,10 @@ function TryIt() {
         <Text>Lease's tools are served by Atlassian's MCP server, so any MCP client can use them with its person's own Jira permissions.</Text>
         <Text>1. A site admin turns the Lease tools on: Atlassian Administration → Apps → Sites → this site → Connected apps → Lease.</Text>
         <Text>2. Add the server to the agent. In Claude Code:</Text>
-        <Code>{`claude mcp add --transport http lease ${MCP_URL}`}</Code>
-        <Text>3. Give the agent the protocol, so it claims before it edits: add skill/SKILL.md from the Lease repository to its skills (or paste it into AGENTS.md / CLAUDE.md).</Text>
+        <Code>{`claude mcp add --transport http lease ${mcpUrl || 'https://mcp.atlassian.com/forge/<app id>'}`}</Code>
+        <Text>3. In each repository, install the guard: it adds the skill, Claude Code hooks and a pre-commit hook, so edits and commits outside the lease are blocked.</Text>
+        <Code>sh lease/skill/install.sh</Code>
+        <Text>4. For cloud agents, add the pull request check (skill/ci) to GitHub Actions or Bitbucket Pipelines: it fails pull requests that change files outside their lease.</Text>
         <Inline>
           <Button onClick={() => router.open(REPO_URL)}>Open the Lease repository</Button>
         </Inline>

@@ -40,11 +40,13 @@ and person is changing right now, in the tool where the work is planned.**
 | **No collisions** | Two claims collide when any file could match both path patterns. The check is exact for `*`, `?`, `**` and folder prefixes, per repository (HTTPS, SSH and `owner/name` forms are the same repository). |
 | **People first** | Agents only get work a person marked safe (label `agent-ok`), never work a person has *In Progress*, and never protected paths (`**/migrations/**`, `infra/**`, CI workflows by default). Folder claims are granted with the protected parts listed as `mustNotTouch`. |
 | **People reserve files too** | Working on something by hand? Reserve its folders from the Jira panel for up to 8 hours, and agents on *other* work items are refused those paths, with your name. |
-| **Enforced locally** | The Lease guard (`skill/install.sh`) adds Claude Code hooks and a git pre-commit hook: granted leases are recorded automatically from the MCP results, and edits or commits outside them are blocked with the exact next step. No tokens, no network. |
+| **Shared files don't serialize the team** | `package.json`, lockfiles, barrel `index.ts` files and the like (configurable) never block each other: claims on them are granted with a note to keep changes additive so git can merge them. |
+| **Enforced locally** | The Lease guard (`skill/install.sh`) adds Claude Code hooks and a git pre-commit hook: granted leases are recorded automatically from the MCP results, and edits or commits outside them are blocked with the exact next step. No tokens, no network. Each git worktree keeps its own lease state. |
+| **Enforced in CI** | For cloud agents with no local hooks: `skill/ci/lease-pr-check.mjs` (GitHub Actions and Bitbucket Pipelines snippets included) reads the work item's lease from Jira and fails a pull request that changes files outside it, or whose lease a person revoked. |
 | **Leases expire** | 30 minutes without a heartbeat (configurable) and the work returns to the queue, with a comment and the agent's last progress note. A scheduled trigger sweeps every 5 minutes; every read also ignores expired leases. |
 | **Take it back** | Anyone who can edit the work item can revoke an agent's lease. The panel shows *Stopping…* until the agent hears about it on its next call, then tells the agent who took the work back and why. |
 | **Scope check on hand-off** | `release-work` posts the outcome, summary and PR on the work item, and checks the changed files against the lease: files outside it, or in protected paths, are called out. |
-| **Jira stays the truth** | Moving a work item to Done ends its lease. A person starting leased work is flagged on the work item, once. Leases are mirrored to an issue property: `issue.property[lease].held = true` works in JQL. |
+| **Jira stays the truth** | Moving a work item to Done ends its lease. A person starting leased work is flagged on the work item, once. Leases are mirrored to an issue property (`issue.property[lease].held = true` works in JQL), which keeps the last lease's paths after it ends so CI can check the pull request. |
 | **Morning report** | `agent-report` and the Lease Tower Rovo agent: finished work with PRs, what needs a person (blocked, handed back, expired), collisions prevented. |
 | **Per-project policy** | Project admins set the label, leases per agent, lease length, protected paths, and whether in-progress human work is off limits. |
 | **Try it without an agent** | The control tower can add sample work items and run two simulated agents through the real claim code. |
@@ -68,14 +70,15 @@ and person is changing right now, in the tool where the work is planned.**
   uses `FAIL_IF_EXISTS`. One record keeps every grant linearizable across repositories and
   people; it is capped at 150 active leases per site (about 100 KB, well under the entity
   limit). Sharding per repository is the next step for very large sites.
-* **Skill and guard for agents**: [`skill/SKILL.md`](skill/SKILL.md) teaches the protocol;
-  [`skill/install.sh`](skill/install.sh) installs the local guard.
+* **Skill, guard and CI check**: [`skill/SKILL.md`](skill/SKILL.md) teaches the protocol;
+  [`skill/install.sh`](skill/install.sh) installs the local guard;
+  [`skill/ci/`](skill/ci/) checks pull requests against the lease.
 
 ## Tests
 
 ```bash
 npm install
-npm test          # 52 tests, offline, about 2 seconds
+npm test          # 61 tests, offline, about 3 seconds
 ```
 
 * `test/paths.test.js`: glob overlap, including a brute-force oracle over 600 random pattern pairs.
@@ -86,6 +89,8 @@ npm test          # 52 tests, offline, about 2 seconds
   KVS, including revocation hand-shake, reservations, scope check comments and the simulator.
 * `test/hooks.test.js`: the guard as real processes in a throwaway git repository: install,
   blocked and allowed edits, `mustNotTouch`, pre-commit refusal, bypass, expiry.
+* `test/ci.test.js`: the pull request check: inside, outside, protected, revoked, missing lease,
+  other repository, step summary.
 
 Mutation check: removing the revision condition, the collision check, the human-in-progress
 rule, expiry, glob matching or the owner check each turns tests red.
