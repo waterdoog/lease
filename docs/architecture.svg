@@ -41,7 +41,7 @@
   <text x="616" y="246" font-size="13" fill="#352C63">lease-status · agent-report</text>
   <rect x="600" y="270" width="290" height="118" rx="10" fill="#ffffff" stroke="#8F7EE7"/>
   <text x="616" y="296" font-size="15" font-weight="700" fill="#352C63">Lease table</text>
-  <text x="616" y="318" font-size="13" fill="#352C63">one Custom Entity record + revision</text>
+  <text x="616" y="318" font-size="13" fill="#352C63">a Custom Entity record per repository</text>
   <text x="616" y="337" font-size="13" fill="#352C63">conditional transaction = never grants</text>
   <text x="616" y="356" font-size="13" fill="#352C63">the same files twice; exact glob overlap;</text>
   <text x="616" y="375" font-size="13" fill="#352C63">policy per project; need-to-know filter</text>
