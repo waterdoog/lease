@@ -564,3 +564,28 @@ export function publicLease(l) {
 }
 
 export { fmtTime };
+
+// Jira workflow validator ("Lease gate"): may this work item move on (e.g. to Done)?
+// `prop` is the work item's `lease` issue property, `labels` its labels.
+export const REVIEWED_LABEL = 'lease-reviewed';
+export function gate(prop, labels = [], now = Date.now()) {
+  if (!prop) return { result: true };
+  const reviewed = (labels || []).includes(REVIEWED_LABEL);
+  if (prop.held && prop.kind === 'agent' && prop.state === 'held' && Date.parse(prop.expiresAt) > now)
+    return {
+      result: false,
+      errorMessage: `Lease: ${prop.agent}${prop.owner ? ` (for ${prop.owner})` : ''} is still working on this work item. Take it back from the Lease panel, or wait for the agent to hand it off.`,
+    };
+  const sc = prop.scopeCheck;
+  if (sc && sc.clean === false && !reviewed) {
+    const what = [
+      sc.outside?.length ? `${sc.outside.length} file(s) outside its lease (${sc.outside.slice(0, 3).join(', ')}${sc.outside.length > 3 ? ', ...' : ''})` : '',
+      sc.protectedTouched?.length ? `protected path(s) ${sc.protectedTouched.slice(0, 3).join(', ')}` : '',
+    ].filter(Boolean).join(' and ');
+    return {
+      result: false,
+      errorMessage: `Lease: ${prop.agent}'s change touched ${what}. A person must review it, then add the "${REVIEWED_LABEL}" label to close this work item.`,
+    };
+  }
+  return { result: true };
+}

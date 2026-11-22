@@ -345,3 +345,20 @@ test('warn mode grants agent overlaps with a warning to both sides, but never ov
   assert.equal(claimOn(r.board, 'APP-1', 'src/x/y.ts', { repo: 'acme/web', policy: pol }).decision.code, 'PATH_COLLISION');
   assert.equal(claimOn(L.emptyBoard(), 'APP-1', 'db/migrations/1.sql', { policy: pol }).decision.code, 'PROTECTED_PATH');
 });
+
+test('Lease gate: blocks closing while an agent works, and after an out-of-lease hand-off until reviewed', () => {
+  const later = new Date(T0 + 10 * MIN).toISOString();
+  assert.equal(L.gate(null).result, true);
+  const working = { held: true, kind: 'agent', state: 'held', agent: 'codex', owner: 'Mei', expiresAt: later };
+  const g1 = L.gate(working, [], T0);
+  assert.equal(g1.result, false);
+  assert.match(g1.errorMessage, /codex \(for Mei\) is still working/);
+  assert.equal(L.gate({ ...working, expiresAt: new Date(T0 - MIN).toISOString() }, [], T0).result, true, 'an expired lease does not block');
+  assert.equal(L.gate({ ...working, kind: 'person' }, [], T0).result, true, 'a person reservation does not block');
+  const strayed = { held: true, state: 'awaiting-merge', kind: 'agent', agent: 'codex', scopeCheck: { clean: false, outside: ['src/billing/x.ts'], protectedTouched: [] } };
+  const g2 = L.gate(strayed, [], T0);
+  assert.equal(g2.result, false);
+  assert.match(g2.errorMessage, /1 file\(s\) outside its lease \(src\/billing\/x\.ts\).*lease-reviewed/);
+  assert.equal(L.gate(strayed, ['lease-reviewed'], T0).result, true);
+  assert.equal(L.gate({ ...strayed, scopeCheck: { clean: true, outside: [], protectedTouched: [] } }, [], T0).result, true);
+});

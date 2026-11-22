@@ -331,3 +331,39 @@ test('Rovo context: a project question is not narrowed to the open work item', a
   const one = await app.leaseStatus({ context: { jira: { issueKey: 'APP-107' } } }, as('yu'));
   assert.ok(one.activeLeases.every((l) => l.issueKey === 'APP-107'));
 });
+
+test('leases are sharded per repository: separate records, cross-repo work item check, heartbeats find their shard', async () => {
+  const kv = globalThis.__kvs;
+  issue('APP-150', 'Mobile push tokens');
+  issue('APP-151', 'API pagination');
+  const a = await app.claimWork({ issueKey: 'APP-150', agent: 'claude-code', paths: 'src/push', repo: 'acme/mobile' }, as('yu'));
+  const b = await app.claimWork({ issueKey: 'APP-151', agent: 'codex', paths: 'src/push', repo: 'acme/api' }, as('mei'));
+  assert.equal(a.granted && b.granted, true, 'same path, different repositories: no collision');
+  const records = [...kv.entities.keys()].filter((k) => k.startsWith('board/leases:'));
+  assert.ok(records.some((k) => k.includes('acme_mobile')) && records.some((k) => k.includes('acme_api')), records.join(','));
+  // another person cannot take APP-150 through a different repository
+  const c = await app.claimWork({ issueKey: 'APP-150', agent: 'cursor', paths: 'docs', repo: 'acme/docs' }, as('sam'));
+  assert.equal(c.result, 'ISSUE_LEASED');
+  // the same person's agent may work on the same work item in another repository
+  const d = await app.claimWork({ issueKey: 'APP-150', agent: 'claude-code', paths: 'ios/Push', repo: 'acme/ios' }, as('yu'));
+  assert.equal(d.granted, true);
+  // heartbeat and release find the right shard from the lease id
+  assert.equal((await app.heartbeat({ leaseId: b.lease.leaseId, note: 'pagination cursor done' }, as('mei'))).granted, true);
+  assert.equal((await app.releaseWork({ leaseId: b.lease.leaseId, outcome: 'blocked', summary: 'needs API design review' }, as('mei'))).granted, true);
+  // pages see every repository
+  const st = await app.leaseStatus({ projectKey: 'APP' }, as('yu'));
+  assert.ok(st.activeLeases.some((l) => l.repo === 'acme/mobile') && st.activeLeases.some((l) => l.repo === 'acme/ios'));
+});
+
+test('the Lease gate validator reads the live issue property', async () => {
+  issue('APP-160', 'Retry budget');
+  const c = await app.claimWork({ issueKey: 'APP-160', agent: 'codex', paths: 'src/retry', repo: 'acme/web' }, as('mei'));
+  assert.equal((await app.leaseGate({ issue: { key: 'APP-160' } })).result, false, 'agent still working');
+  await app.releaseWork({ leaseId: c.lease.leaseId, outcome: 'done', prUrl: 'https://github.com/acme/web/pull/120', changedFiles: 'src/retry/budget.ts, src/auth/login.ts' }, as('mei'));
+  const g = await app.leaseGate({ issue: { key: 'APP-160' } });
+  assert.equal(g.result, false);
+  assert.match(g.errorMessage, /src\/auth\/login\.ts/);
+  jira.issues['APP-160'].labels.push('lease-reviewed');
+  assert.equal((await app.leaseGate({ issue: { key: 'APP-160' } })).result, true);
+  assert.equal((await app.leaseGate({})).result, true);
+});

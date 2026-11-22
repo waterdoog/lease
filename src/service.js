@@ -7,6 +7,38 @@ import * as jira from './jira.js';
 
 export const store = makeStore({ kvs, Filter, FilterConditions, WhereConditions });
 
+// One lease record per repository. Paths only collide within a repository, so
+// every grant is still linearizable where it matters, unrelated repositories
+// never contend for the same record, and each repository has its own size budget.
+const shardStores = new Map();
+function shardKeyOf(repo) {
+  let h = 0;
+  for (const c of repo) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `leases:${repo.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100)}:${h.toString(36)}`;
+}
+export function shard(repo) {
+  const key = shardKeyOf(core.normalizeRepo(repo));
+  if (!shardStores.has(key)) shardStores.set(key, makeStore({ kvs, Filter, FilterConditions, WhereConditions, boardKey: key }));
+  return shardStores.get(key);
+}
+async function remember(lease) {
+  await quietly('shard', () => kvs.set(`shard:${shardKeyOf(lease.repo)}`, { repo: lease.repo }));
+  await quietly('lease-map', () => kvs.set(`lease:${lease.id}`, { repo: lease.repo, issueKey: lease.issueKey }, { ttl: { unit: 'DAYS', value: 30 } }));
+}
+async function repos() {
+  const rows = await store.listPrefix('shard:', { limit: 1000 });
+  return [...new Set(rows.map((r) => r.repo).filter(Boolean))];
+}
+// Every active lease on the site, for pages and reports.
+async function readAll() {
+  const boards = await Promise.all((await repos()).map((r) => shard(r).readBoard()));
+  return { rev: 0, leases: Object.assign({}, ...boards.map((b) => b.leases)) };
+}
+async function repoOfLease(id) {
+  const m = await kvs.get(`lease:${id}`).catch(() => null);
+  return (m && m.repo) || 'default';
+}
+
 const newId = () => `L${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.toUpperCase();
 const projectOf = (issueKey) => jira.cleanKey(issueKey).split('-')[0];
 
@@ -62,6 +94,7 @@ function leaseProperty(l, state = 'held') {
     mustNotTouch: l.excluded || [],
     expiresAt: core.fmtTime(l.expiresAt),
     ...(state !== 'held' ? { endedAt: core.fmtTime(l.endedAt || Date.now()), outcome: l.outcome || state, prUrl: l.prUrl || null } : {}),
+    ...(l.scopeCheck ? { scopeCheck: { clean: l.scopeCheck.clean, outside: l.scopeCheck.outside.slice(0, 20), protectedTouched: l.scopeCheck.protectedTouched.slice(0, 20) } } : {}),
   };
 }
 
@@ -74,9 +107,15 @@ export async function claimWork(input, { accountId }) {
     jira.myself().catch(() => ({ accountId, displayName: null })),
     policyFor(projectOf(issueKey)),
   ]);
+  const repo = core.normalizeRepo(input.repo || policy.defaultRepo);
+  // One holder per work item across repositories (a work item may span repositories
+  // for the same person's agents).
+  const elsewhere = core.leaseForIssue(await readAll(), issueKey, now);
+  if (elsewhere && elsewhere.repo !== repo && elsewhere.ownerAccountId !== accountId)
+    return present({ granted: false, code: 'ISSUE_LEASED', reasons: [`${issueKey} is already held in ${elsewhere.repo} by ${elsewhere.kind === core.PERSON ? elsewhere.ownerName || 'a person' : elsewhere.agent}.`], holder: core.publicLease(elsewhere), retryAfter: elsewhere.expiresAt });
   const id = newId();
-  const result = await store.update((board) =>
-    core.claim(board, { ...input, issueKey }, { now, accountId, ownerName: me.displayName, issue, policy, newId: id })
+  const result = await shard(repo).update((board) =>
+    core.claim(board, { ...input, issueKey, repo }, { now, accountId, ownerName: me.displayName, issue, policy, newId: id })
   );
   await afterExpired(result.expired, now);
   const d = result.decision;
@@ -94,6 +133,7 @@ export async function claimWork(input, { accountId }) {
   );
   if (d.granted && d.code === 'GRANTED') {
     const l = d.lease;
+    await remember(l);
     await quietly('property', () => jira.setLeaseProperty(issueKey, leaseProperty(l)));
     await quietly('comment', () =>
       jira.comment(issueKey, [
@@ -112,8 +152,10 @@ export async function dryRunClaim(input, { accountId }) {
   const now = Date.now();
   const issueKey = jira.cleanKey(input.issueKey);
   if (!jira.isIssueKey(issueKey)) return { granted: false, result: 'BAD_REQUEST', reasons: [`"${input.issueKey}" is not a work item key like PROJ-123.`] };
-  const [issue, policy, board] = await Promise.all([jira.getIssue(issueKey), policyFor(projectOf(issueKey)), store.readBoard()]);
-  const { decision } = core.claim(board, { ...input, issueKey }, { now, accountId, issue, policy, newId: 'DRY-RUN' });
+  const [issue, policy] = await Promise.all([jira.getIssue(issueKey), policyFor(projectOf(issueKey))]);
+  const repo = core.normalizeRepo(input.repo || policy.defaultRepo);
+  const board = await shard(repo).readBoard();
+  const { decision } = core.claim(board, { ...input, issueKey, repo }, { now, accountId, issue, policy, newId: 'DRY-RUN' });
   return { dryRun: true, ...present(decision) };
 }
 
@@ -139,10 +181,11 @@ export async function createSampleWork(projectKey) {
 
 export async function heartbeatLease(input, { accountId }) {
   const now = Date.now();
-  const board0 = await store.readBoard();
+  const box = shard(await repoOfLease(input.leaseId));
+  const board0 = await box.readBoard();
   const l0 = board0.leases[input.leaseId];
   const policy = await policyFor(l0?.projectKey || 'NONE');
-  const result = await store.update((board) => core.heartbeat(board, input, { now, accountId, policy }));
+  const result = await box.update((board) => core.heartbeat(board, input, { now, accountId, policy }));
   await afterExpired(result.expired, now);
   const d = await explainGone(result.decision, input.leaseId, now);
   if (d.granted) await quietly('property', () => jira.setLeaseProperty(d.lease.issueKey, leaseProperty(d.lease)));
@@ -169,9 +212,10 @@ async function explainGone(d, leaseId, now) {
 
 export async function releaseLease(input, { accountId }) {
   const now = Date.now();
-  const board0 = await store.readBoard();
+  const box = shard(await repoOfLease(input.leaseId));
+  const board0 = await box.readBoard();
   const policy = await policyFor(board0.leases[input.leaseId]?.projectKey || 'NONE');
-  const result = await store.update((board) => core.release(board, input, { now, accountId, policy }));
+  const result = await box.update((board) => core.release(board, input, { now, accountId, policy }));
   await afterExpired(result.expired, now);
   const d = await explainGone(result.decision, input.leaseId, now);
   if (d.granted) {
@@ -210,13 +254,14 @@ export async function releaseLease(input, { accountId }) {
 
 export async function revokeLease(input, { accountId }) {
   const now = Date.now();
-  const board = await store.readBoard();
+  const box = shard(await repoOfLease(input.leaseId));
+  const board = await box.readBoard();
   const l = board.leases[input.leaseId];
   if (!l) return { granted: false, code: 'LEASE_GONE', reasons: ['That lease is no longer active.'] };
   const allowed = l.ownerAccountId === accountId || (await jira.canEditIssue(l.issueKey));
   if (!allowed) return { granted: false, code: 'FORBIDDEN', reasons: ['Only the agent’s person or someone who can edit the work item can take it back.'] };
   const me = await jira.myself().catch(() => ({ displayName: null }));
-  const result = await store.update((b) => core.revoke(b, input, { now, accountId, actorName: me.displayName }));
+  const result = await box.update((b) => core.revoke(b, input, { now, accountId, actorName: me.displayName }));
   const d = result.decision;
   if (d.granted) {
     await quietly('history', () => store.saveHistory(d.lease));
@@ -247,9 +292,11 @@ export async function reservePaths(input, { accountId }) {
   const issueKey = jira.cleanKey(input.issueKey);
   const [issue, me, policy] = await Promise.all([jira.getIssue(issueKey), jira.myself().catch(() => ({ displayName: null })), policyFor(projectOf(issueKey))]);
   const id = newId();
-  const result = await store.update((board) => core.reserve(board, { ...input, issueKey }, { now, accountId, ownerName: me.displayName, issue, policy, newId: id }));
+  const repo = core.normalizeRepo(input.repo || policy.defaultRepo);
+  const result = await shard(repo).update((board) => core.reserve(board, { ...input, issueKey, repo }, { now, accountId, ownerName: me.displayName, issue, policy, newId: id }));
   await afterExpired(result.expired, now);
   const d = result.decision;
+  if (d.granted) await remember(d.lease);
   await quietly('event', () =>
     store.logEvent({ type: d.granted ? 'reserved' : 'denied', code: d.code, issueKey, agent: core.PERSON, owner: me.displayName, reasons: d.reasons, at: now })
   );
@@ -294,7 +341,7 @@ export async function simulateAgents(projectKey, { accountId }) {
 }
 
 export async function checkPaths(input) {
-  const board = await store.readBoard();
+  const board = await shard(input.repo).readBoard();
   const res = core.whoHolds(board, input, Date.now(), null);
   if (res.errors.length) return { ok: false, reasons: res.errors };
   return {
@@ -315,7 +362,7 @@ export async function findWork({ projectKey, limit = 10 }) {
   const scope = pk ? `project = "${pk}" AND ` : '';
   const labelClause = policy.requireLabel ? `labels = "${policy.agentLabel}" AND ` : '';
   const issues = await jira.searchIssues(`${scope}${labelClause}statusCategory != Done ORDER BY priority DESC, updated DESC`, { max: 50 });
-  const board = await store.readBoard();
+  const board = await readAll();
   const free = [];
   const taken = [];
   for (const i of issues) {
@@ -336,7 +383,7 @@ export async function findWork({ projectKey, limit = 10 }) {
 
 export async function status({ issueKey, projectKey } = {}) {
   const now = Date.now();
-  const board = await store.readBoard();
+  const board = await readAll();
   let leases = core.activeLeases(board, now);
   if (issueKey) leases = leases.filter((l) => l.issueKey === jira.cleanKey(issueKey));
   else if (projectKey) leases = leases.filter((l) => l.projectKey === String(projectKey).toUpperCase());
@@ -349,7 +396,7 @@ export async function report({ hours = 12, projectKey } = {}) {
   const [history, events, board] = await Promise.all([
     store.listPrefix('hist:', { since, limit: 300 }),
     store.listPrefix('evt:', { since, limit: 500 }),
-    store.readBoard(),
+    readAll(),
   ]);
   const pk = projectKey ? String(projectKey).toUpperCase() : null;
   const inProject = (k) => !pk || String(k || '').startsWith(`${pk}-`);
@@ -414,26 +461,43 @@ export async function savePolicy(projectKey, patch) {
 }
 
 // Scheduled every five minutes: reclaim work from agents that went silent.
+// Jira workflow validator: blocks a transition while an agent still holds the
+// work item, or after its hand-off left the lease until a person marks it reviewed.
+export async function leaseGate(issueKey) {
+  const facts = await jira.getLeaseFacts(issueKey);
+  if (!facts) return { result: true };
+  return core.gate(facts.lease, facts.labels);
+}
+
 export async function sweepExpired() {
   const now = Date.now();
-  const result = await store.update((board) => core.sweep(board, now));
-  await afterExpired(result.expired, now);
-  return result.expired.length;
+  let n = 0;
+  for (const r of await repos()) {
+    const result = await shard(r).update((board) => core.sweep(board, now));
+    await afterExpired(result.expired, now);
+    n += result.expired.length;
+  }
+  return n;
 }
 
 // Jira changed a work item. If a person closed it, end its lease; if a person
 // started working on it while an agent holds it, say so once.
 export async function onIssueChanged(issueKey) {
   const now = Date.now();
-  const board = await store.readBoard();
+  const board = await readAll();
   const lease = core.leaseForIssue(board, issueKey, now);
   if (!lease) return 'no lease';
+  const box = shard(lease.repo);
   const issue = await jira.getIssue(issueKey, { as: 'app' });
   if (!issue) return 'issue gone';
   const policy = await policyFor(projectOf(issueKey));
   const mergedStatus = lease.kind === core.REVIEW && policy.mergedStatuses.some((s) => s.toLowerCase() === String(issue.statusName).toLowerCase());
   if (issue.statusCategory === 'done' || mergedStatus) {
-    const result = await store.update((b) => core.releaseIssue(b, issueKey, { now, outcome: mergedStatus ? 'merged' : 'closed-in-jira' }));
+    const result = { ended: [] };
+    for (const r of new Set(core.activeLeases(board, now).filter((l) => l.issueKey === issueKey).map((l) => l.repo))) {
+      const one = await shard(r).update((b) => core.releaseIssue(b, issueKey, { now, outcome: mergedStatus ? 'merged' : 'closed-in-jira' }));
+      result.ended.push(...one.ended);
+    }
     for (const l of result.ended) {
       await quietly('history', () => store.saveHistory(l));
       await quietly('event', () => store.logEvent({ type: 'released', outcome: l.outcome, issueKey, agent: l.agent, at: now }));
@@ -444,7 +508,7 @@ export async function onIssueChanged(issueKey) {
   const humanStarted =
     !lease.kind && issue.statusCategory === 'indeterminate' && issue.assigneeAccountId && issue.assigneeAccountId !== lease.ownerAccountId;
   if (humanStarted && !lease.humanOverlapNotified) {
-    await store.update((b) => ({ board: core.markHumanOverlap(b, lease.id) }));
+    await box.update((b) => ({ board: core.markHumanOverlap(b, lease.id) }));
     await quietly('event', () => store.logEvent({ type: 'human-overlap', issueKey, agent: lease.agent, owner: issue.assigneeName, at: now }));
     await quietly('comment', () =>
       jira.comment(issueKey, [

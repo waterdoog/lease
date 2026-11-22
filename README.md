@@ -58,6 +58,7 @@ another.
 | **People first** | Agents only get work a person marked safe (label `agent-ok`), never work a person has *In Progress*, and never protected paths (`**/migrations/**`, `infra/**`, CI workflows by default). Folder claims are granted with the protected parts listed as `mustNotTouch`. |
 | **People reserve files too** | Working on something by hand? Reserve its folders from the Jira panel for up to 8 hours, and agents on *other* work items are refused those paths, with your name. |
 | **Shared files don't serialize the team** | `package.json`, lockfiles, barrel `index.ts` files and the like (configurable) never block each other: claims on them are granted with a note to keep changes additive so git can merge them. |
+| **Enforced in Jira** | The **Lease gate** workflow validator (add it to any transition, e.g. *Done*) refuses to move a work item on while an agent still holds it, or after its hand-off changed files outside its lease or in protected paths, until a person reviews it and adds the `lease-reviewed` label. Native Forge, nothing to install. |
 | **Enforced locally** | The Lease guard (`skill/install.sh`) adds Claude Code hooks and a git pre-commit hook: granted leases are recorded automatically from the MCP results, and edits or commits outside them are blocked with the exact next step. No tokens, no network. Each git worktree keeps its own lease state. |
 | **Enforced in CI** | For cloud agents with no local hooks: `skill/ci/lease-pr-check.mjs` (GitHub Actions and Bitbucket Pipelines snippets included) reads the work item's lease from Jira and fails a pull request that changes files outside it, or whose lease a person revoked. |
 | **Leases expire** | 30 minutes without a heartbeat (configurable) and the work returns to the queue, with a comment and the agent's last progress note. A scheduled trigger sweeps every 5 minutes; every read also ignores expired leases. |
@@ -80,18 +81,18 @@ another.
   the invocation context, never from model-supplied input).
 * **`rovo:agent`** "Lease Tower" for the people supervising agents (read-only actions).
 * **UI Kit**: `jira:issuePanel`, `jira:globalPage` and `jira:projectSettingsPage`.
+* **`jira:workflowValidator`**: the Lease gate.
 * **Triggers**: `scheduledTrigger` (every 5 minutes) reclaims silent leases;
   `avi:jira:updated:issue` keeps leases in step with Jira.
-* **A lease table that cannot double-grant.** All active leases live in one Custom Entity
-  record with a revision number. Each change reads it (strictly consistent), decides with
+* **A lease table that cannot double-grant, sharded per repository.** Each repository's
+  active leases live in one Custom Entity record with a revision number (paths only collide
+  within a repository, so unrelated repositories never contend and each has its own size
+  budget). Each change reads it (strictly consistent), decides with
   pure functions (`src/core/leases.js`), and commits with a conditional transaction on the
   revision; if another agent committed first, it re-reads and decides again. The first write
-  uses `FAIL_IF_EXISTS`. One record keeps every grant linearizable across repositories and
-  people. A lease takes about 490 bytes, so the 200 KiB budget (under the 240 KiB entity limit)
-  holds about 400 active leases and pull-request holds per site; past that, claims are refused
-  with a clear message. Contention is low in practice: 400 agents heart-beating every 10 minutes
-  is about 40 writes a minute, and a conflicting write costs one re-read. Sharding per repository is
-  the next step for very large sites.
+  uses `FAIL_IF_EXISTS`. A lease takes about 490 bytes, so each repository holds about 400
+  active leases and pull-request holds (200 KiB budget, under the 240 KiB entity limit);
+  one holder per work item is checked across repositories.
 * **Skill, guard and CI check**: [`skill/SKILL.md`](skill/SKILL.md) teaches the protocol;
   [`skill/install.sh`](skill/install.sh) installs the local guard;
   [`skill/ci/`](skill/ci/) checks pull requests against the lease.
@@ -100,7 +101,7 @@ another.
 
 ```bash
 npm install
-npm test          # 72 tests, offline, about 3 seconds
+npm test          # 75 tests, offline, about 3 seconds
 ```
 
 * `test/paths.test.js`: glob overlap, including a brute-force oracle over 600 random pattern pairs.

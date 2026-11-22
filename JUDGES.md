@@ -79,4 +79,4 @@ or *"What can I safely hand to agents in APP?"*.
 * Everything runs on Forge. No external calls, no API keys, nothing to configure besides
   enabling the MCP tools for external clients.
 * MCP tools act with the connecting person's own Jira permissions.
-* Source and tests: https://github.com/waterdoog/lease (`npm test` runs 72 offline tests).
+* Source and tests: https://github.com/waterdoog/lease (`npm test` runs 75 offline tests).

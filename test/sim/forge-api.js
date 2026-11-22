@@ -68,7 +68,9 @@ function handle(who, path, opts = {}) {
       }
       return res(204, null);
     }
-    return res(200, raw(issue));
+    const out = raw(issue);
+    if (path.includes('properties=lease')) out.properties = jiraState.props[issue.key] ? { lease: jiraState.props[issue.key] } : {};
+    return res(200, out);
   }
   if (path === '/rest/api/3/search/jql') {
     const label = (body.jql.match(/labels = "([^"]+)"/) || [])[1];

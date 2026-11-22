@@ -106,6 +106,18 @@ resolver.define('savePolicy', async ({ payload }) => svc.savePolicy(payload.proj
 
 export const resolverHandler = resolver.getDefinitions();
 
+// ---- Workflow validator ("Lease gate") -------------------------------------
+export async function leaseGate(args) {
+  try {
+    const key = args?.issue?.key;
+    if (!key) return { result: true };
+    return await svc.leaseGate(key);
+  } catch (e) {
+    console.error(e);
+    return { result: true }; // never lock a workflow because Lease had an error
+  }
+}
+
 // ---- Triggers --------------------------------------------------------------
 export async function sweep() {
   const n = await svc.sweepExpired();

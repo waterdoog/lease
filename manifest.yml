@@ -254,6 +254,12 @@ modules:
       render: native
       title: Lease for agents
 
+  jira:workflowValidator:
+    - key: lease-gate
+      name: Lease gate
+      description: Blocks the transition while an AI coding agent still holds the work item, or after its hand-off changed files outside its lease, until a person adds the lease-reviewed label.
+      function: lease-gate-fn
+
   # ---- Background
   scheduledTrigger:
     - key: lease-sweeper
@@ -286,6 +292,8 @@ modules:
       handler: index.resolverHandler
     - key: sweep-fn
       handler: index.sweep
+    - key: lease-gate-fn
+      handler: index.leaseGate
     - key: issue-updated-fn
       handler: index.onIssueUpdated
 

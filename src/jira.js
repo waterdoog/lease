@@ -43,6 +43,13 @@ export async function getIssue(issueKey, { as = 'user' } = {}) {
   return toIssueFacts(await json(res, 'Reading the work item'));
 }
 
+export async function getLeaseFacts(issueKey) {
+  const res = await asApp().requestJira(route`/rest/api/3/issue/${cleanKey(issueKey)}?fields=labels&properties=lease`);
+  if (!res.ok) return null;
+  const d = await res.json();
+  return { labels: d.fields?.labels || [], lease: d.properties?.lease || null };
+}
+
 export async function searchIssues(jql, { max = 50, as = 'user' } = {}) {
   const who = as === 'app' ? asApp() : asUser();
   const res = await who.requestJira(route`/rest/api/3/search/jql`, {
