@@ -1,36 +1,53 @@
 # Lease — air-traffic control for AI coding agents in Jira
 
 Teams now run several coding agents at once: Claude Code on one laptop, Codex in the
-cloud, Cursor on another. They all read the same Jira backlog and push to the same
-repository, and nothing stops two of them from rewriting the same files, or an agent from
-picking up a ticket a person started this morning.
+cloud, Cursor on another, each in its own branch or sandbox. They read the same Jira
+backlog and change the same codebase. Nothing stops two of them from rewriting the same
+module for two different tickets, or an agent from taking a ticket a colleague started this
+morning. You find out at merge time, after the tokens and the review hours are spent.
 
-**Lease** is an Atlassian Forge app that makes every agent *claim* its Jira work item
-before it writes code, and name the files it will change. A claim is refused when it would
-collide with another agent, a person who already has the work in progress, or a path only
+**Lease** is an Atlassian Forge app that makes every agent *claim* its Jira work item, and
+name the files it will change, before its first write. A claim is refused when it would
+collide with another agent, with a person working on those files, or with a path only
 people may change. Claims expire unless the agent keeps sending heartbeats, so a crashed
-agent never blocks the backlog. People see who holds what, take work back with one click,
-and get a morning report of what the agents did.
+agent never blocks the backlog. People see who holds what in Jira, reserve the files they
+are changing by hand, take work back with one click, and get a morning report.
 
 ```
- Claude Code ─┐                       ┌─ Jira issue panel: who holds this, paths, progress, take back
- Codex ───────┼─ Atlassian MCP ─ Lease ┼─ Control tower page: live leases, refusals, policy
- Cursor ──────┘   (rovo:mcp)     (Forge)└─ Rovo agent "Lease Tower": "what did agents do overnight?"
+ Claude Code ─┐                        ┌─ Jira issue panel: who holds this, paths, progress, take back, reserve
+ Codex ───────┼─ Atlassian MCP ── Lease ┼─ Control tower page: live leases, refusals, policy, simulator
+ Cursor ──────┘   (rovo:mcp)     (Forge) └─ Rovo agent "Lease Tower": "what did agents do overnight?"
+      │
+      └─ Lease guard (local hooks): edits and commits outside the lease are blocked
 ```
+
+## Why not just worktrees, the assignee field or CODEOWNERS?
+
+| | What it does | What it misses |
+|---|---|---|
+| Git worktrees / sandboxes | Agents don't overwrite each other's files on disk. | Two branches rewriting `src/auth` still collide, at merge time, after the work is done. |
+| Jira assignee | One person per ticket. | An agent working *for* Yu is not Yu; it says nothing about files; it never expires when the agent crashes. |
+| CODEOWNERS / branch protection | Review after the change. | Lease acts before the first write, when changing course is free. |
+
+Lease uses all three as they are, and adds the missing piece: **which files each agent
+and person is changing right now, in the tool where the work is planned.**
 
 ## What it does
 
 | | |
 |---|---|
-| **Claim before code** | `claim-work` grants a lease on a work item for named paths (`src/auth/**, tests/auth`). |
-| **No collisions** | Two claims collide when any file could match both path patterns. The check is exact for globs (`*`, `?`, `**`, folder prefixes) and scoped per repository. |
+| **Claim before the first write** | `claim-work` grants a lease on a work item for named paths (`src/auth/**, tests/auth`). |
+| **No collisions** | Two claims collide when any file could match both path patterns. The check is exact for `*`, `?`, `**` and folder prefixes, per repository (HTTPS, SSH and `owner/name` forms are the same repository). |
 | **People first** | Agents only get work a person marked safe (label `agent-ok`), never work a person has *In Progress*, and never protected paths (`**/migrations/**`, `infra/**`, CI workflows by default). Folder claims are granted with the protected parts listed as `mustNotTouch`. |
-| **Leases expire** | 30 minutes without a heartbeat (configurable) and the work returns to the queue, with a comment on the work item and the agent's last progress note. A scheduled trigger sweeps every 5 minutes; every read also ignores expired leases. |
-| **Take it back** | Anyone who can edit the work item can revoke a lease from the Jira panel. The agent learns on its next heartbeat (`LEASE_GONE`) and stops. |
-| **Jira stays the truth** | Moving a work item to Done ends its lease. A person starting leased work is flagged on the work item, once. The lease is mirrored to an issue property, so JQL works: `issue.property[lease].held = true`. |
-| **Hand-off** | `release-work` posts the outcome, a summary and the pull request on the work item, and asks a person to review. |
+| **People reserve files too** | Working on something by hand? Reserve its folders from the Jira panel for up to 8 hours, and agents on *other* work items are refused those paths, with your name. |
+| **Enforced locally** | The Lease guard (`skill/install.sh`) adds Claude Code hooks and a git pre-commit hook: granted leases are recorded automatically from the MCP results, and edits or commits outside them are blocked with the exact next step. No tokens, no network. |
+| **Leases expire** | 30 minutes without a heartbeat (configurable) and the work returns to the queue, with a comment and the agent's last progress note. A scheduled trigger sweeps every 5 minutes; every read also ignores expired leases. |
+| **Take it back** | Anyone who can edit the work item can revoke an agent's lease. The panel shows *Stopping…* until the agent hears about it on its next call, then tells the agent who took the work back and why. |
+| **Scope check on hand-off** | `release-work` posts the outcome, summary and PR on the work item, and checks the changed files against the lease: files outside it, or in protected paths, are called out. |
+| **Jira stays the truth** | Moving a work item to Done ends its lease. A person starting leased work is flagged on the work item, once. Leases are mirrored to an issue property: `issue.property[lease].held = true` works in JQL. |
 | **Morning report** | `agent-report` and the Lease Tower Rovo agent: finished work with PRs, what needs a person (blocked, handed back, expired), collisions prevented. |
-| **Per-project policy** | Project admins set the label, leases per agent, lease length, protected paths and whether in-progress human work is off limits. |
+| **Per-project policy** | Project admins set the label, leases per agent, lease length, protected paths, and whether in-progress human work is off limits. |
+| **Try it without an agent** | The control tower can add sample work items and run two simulated agents through the real claim code. |
 
 ## How it is built
 
@@ -38,34 +55,37 @@ and get a morning report of what the agents did.
 * **`rovo:mcp`** exposes 7 actions as MCP tools (`find-work`, `claim-work`, `heartbeat`,
   `release-work`, `check-paths`, `lease-status`, `agent-report`) at
   `https://mcp.atlassian.com/forge/<app id>`. Any MCP client connects with OAuth and acts
-  with **its person's own Jira permissions** (all reads run `asUser`).
+  with **its person's own Jira permissions** (reads run `asUser`; the account ID comes from
+  the invocation context, never from model-supplied input).
 * **`rovo:agent`** "Lease Tower" for the people supervising agents (read-only actions).
-* **UI Kit**: `jira:issuePanel` and `jira:globalPage` (live table, 24 h report, policy editor,
-  "would this claim be granted?" checker, sample work items for a fresh site).
+* **UI Kit**: `jira:issuePanel` and `jira:globalPage`.
 * **Triggers**: `scheduledTrigger` (every 5 minutes) reclaims silent leases;
   `avi:jira:updated:issue` keeps leases in step with Jira.
-* **Linearizable lease table.** All active leases live in one Custom Entity record with a
-  revision number. Each change reads it (strictly consistent), decides with pure functions
-  (`src/core/leases.js`), and commits with a conditional transaction on the revision; if
-  another agent committed first, it re-reads and decides again. The first write uses
-  `FAIL_IF_EXISTS`. Two agents can never both be granted overlapping paths.
-* **Skill for agents**: [`skill/SKILL.md`](skill/SKILL.md) teaches any coding agent the
-  protocol (claim, stay inside, heartbeat, stop on `LEASE_GONE`, release with PR).
+* **A lease table that cannot double-grant.** All active leases live in one Custom Entity
+  record with a revision number. Each change reads it (strictly consistent), decides with
+  pure functions (`src/core/leases.js`), and commits with a conditional transaction on the
+  revision; if another agent committed first, it re-reads and decides again. The first write
+  uses `FAIL_IF_EXISTS`. One record keeps every grant linearizable across repositories and
+  people; it is capped at 150 active leases per site (about 100 KB, well under the entity
+  limit). Sharding per repository is the next step for very large sites.
+* **Skill and guard for agents**: [`skill/SKILL.md`](skill/SKILL.md) teaches the protocol;
+  [`skill/install.sh`](skill/install.sh) installs the local guard.
 
 ## Tests
 
 ```bash
 npm install
-npm test          # 36 tests, offline
+npm test          # 52 tests, offline, about 2 seconds
 ```
 
 * `test/paths.test.js`: glob overlap, including a brute-force oracle over 600 random pattern pairs.
-* `test/leases.test.js`: every policy rule, expiry, heartbeats, revoke, and **12 agents racing
-  for the same paths through the real store code: exactly one wins**; 6 racing on disjoint paths: all win, no lost update.
+* `test/leases.test.js`: every policy rule, person reservations, scope checks, expiry, revoke,
+  repository name forms, the site cap, and **12 agents racing for the same paths through the
+  real store code: exactly one wins**; 6 racing on disjoint paths: all win, no lost update.
 * `test/e2e.test.js`: the deployed entry points (`src/index.js`) against an in-memory Jira and
-  KVS: two people's agents collide, a person's in-progress work and a migration are protected,
-  an agent goes silent and its work is reclaimed, a person takes work back, a PR is handed off,
-  the report adds up, closing in Jira ends a lease.
+  KVS, including revocation hand-shake, reservations, scope check comments and the simulator.
+* `test/hooks.test.js`: the guard as real processes in a throwaway git repository: install,
+  blocked and allowed edits, `mustNotTouch`, pre-commit refusal, bypass, expiry.
 
 Mutation check: removing the revision condition, the collision check, the human-in-progress
 rule, expiry, glob matching or the owner check each turns tests red.
@@ -75,25 +95,24 @@ rule, expiry, glob matching or the owner check each turns tests red.
 See [JUDGES.md](JUDGES.md) for the installation link and a 10-minute walkthrough.
 
 ```bash
-# developers
-npm install -g @forge/cli
+npm install -g @forge/cli          # Node 22 or 24
 forge register && forge deploy && forge install --product jira
 ```
 
 Connect an agent (after a site admin enables the Lease tools under Atlassian Administration →
-Apps → Sites → *site* → Connected apps):
+Apps → Sites → *site* → Connected apps), then install the guard in your repository:
 
 ```bash
 claude mcp add --transport http lease https://mcp.atlassian.com/forge/<app id>
+sh /path/to/lease/skill/install.sh
 ```
-
-Then add [`skill/SKILL.md`](skill/SKILL.md) to the agent's skills.
 
 ## Privacy
 
 Lease stores, in Forge storage on your site: active leases (work item key and summary, agent
 name, the person's account ID and display name, paths, plan, progress notes), finished-lease
-history for 90 days and events for 30 days. It makes no external calls.
+history for 90 days, events for 30 days and revocation notices for 2 days. It makes no
+external calls. The local guard keeps `.lease/active.json` in your checkout (git-ignored).
 
 ## License
 

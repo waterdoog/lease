@@ -202,3 +202,56 @@ test('granted folder claims list the protected paths the agent must not touch', 
   assert.deepEqual(r.decision.lease.excluded, ['**/migrations/**']);
   assert.deepEqual(L.publicLease(r.decision.lease).mustNotTouch, ['**/migrations/**']);
 });
+
+test('repository names: https, ssh and scp forms are the same repo', () => {
+  for (const r of ['acme/web', 'https://github.com/acme/web.git', 'git@github.com:acme/web.git', 'ssh://git@bitbucket.org/acme/web', 'ACME/Web/'])
+    assert.equal(L.normalizeRepo(r), 'acme/web', r);
+  const a = claimOn(L.emptyBoard(), 'APP-1', 'src', { repo: 'git@github.com:acme/web.git' });
+  assert.equal(claimOn(a.board, 'APP-2', 'src/x', { agent: 'codex', repo: 'https://github.com/acme/web' }).decision.code, 'PATH_COLLISION');
+});
+
+test('a person reserves paths; agents on other work items are kept out', () => {
+  const r = L.reserve(L.emptyBoard(), { issueKey: 'APP-7', paths: 'src/auth', repo: 'acme/web' }, ctx({ accountId: 'sam', ownerName: 'Sam', issue: issue('APP-7', { labels: [] }) }));
+  assert.equal(r.decision.code, 'RESERVED');
+  assert.equal(r.decision.lease.kind, 'person');
+  assert.equal(r.decision.lease.expiresAt, T0 + 8 * 60 * MIN);
+  const agent = claimOn(r.board, 'APP-1', 'src/auth/login.ts', { repo: 'acme/web' });
+  assert.equal(agent.decision.code, 'PATH_COLLISION');
+  assert.match(agent.decision.reasons[0], /Sam \(a person, working by hand\)/);
+  // agents cannot claim the person's work item either
+  assert.equal(claimOn(r.board, 'APP-7', 'docs', { policy: { requireLabel: false } }).decision.code, 'ISSUE_LEASED');
+  // the person can update their reservation
+  const upd = L.reserve(r.board, { issueKey: 'APP-7', paths: 'src/auth, src/session', repo: 'acme/web' }, ctx({ accountId: 'sam', ownerName: 'Sam', issue: issue('APP-7') }));
+  assert.equal(upd.decision.code, 'RESERVATION_UPDATED');
+  assert.equal(Object.keys(upd.board.leases).length, 1);
+  // nobody can name their agent "person"
+  assert.equal(claimOn(L.emptyBoard(), 'APP-1', 'src', { agent: 'person' }).decision.code, 'BAD_REQUEST');
+});
+
+test('a person cannot reserve over an agent, and is told to take it back', () => {
+  const a = claimOn(L.emptyBoard(), 'APP-1', 'src/auth');
+  const r = L.reserve(a.board, { issueKey: 'APP-1', paths: 'src/auth' }, ctx({ accountId: 'sam', issue: issue('APP-1') }));
+  assert.equal(r.decision.code, 'ISSUE_LEASED');
+  const other = L.reserve(a.board, { issueKey: 'APP-9', paths: 'src/auth/x.ts' }, ctx({ accountId: 'sam', issue: issue('APP-9') }));
+  assert.equal(other.decision.code, 'PATH_COLLISION');
+});
+
+test('release checks the changed files against the lease', () => {
+  const a = claimOn(L.emptyBoard(), 'APP-1', 'src/auth');
+  const ok = L.release(a.board, { leaseId: a.decision.lease.id, changedFiles: 'src/auth/login.ts, src/auth/limit.ts' }, ctx());
+  assert.deepEqual(ok.decision.lease.scopeCheck, { checked: 2, outside: [], protectedTouched: [], clean: true });
+  const bad = L.release(a.board, { leaseId: a.decision.lease.id, changedFiles: 'src/auth/login.ts\nsrc/billing/x.ts\nsrc/auth/migrations/001.sql' }, ctx());
+  const sc = bad.decision.lease.scopeCheck;
+  assert.equal(sc.clean, false);
+  assert.deepEqual(sc.outside, ['src/billing/x.ts']);
+  assert.deepEqual(sc.protectedTouched, ['src/auth/migrations/001.sql']);
+  assert.equal(L.release(a.board, { leaseId: a.decision.lease.id }, ctx()).decision.lease.scopeCheck, null);
+});
+
+test('site-wide cap keeps the lease record small', () => {
+  let b = L.emptyBoard();
+  for (let i = 0; i < L.MAX_ACTIVE_PER_SITE; i++) b = claimOn(b, `APP-${i + 1}`, `pkg${i}`, { agent: `a${i}` }).board;
+  assert.equal(Object.keys(b.leases).length, L.MAX_ACTIVE_PER_SITE);
+  assert.ok(JSON.stringify(b).length < 120 * 1024, 'stays well under the Custom Entity value limit');
+  assert.equal(claimOn(b, 'APP-999', 'other', { agent: 'late' }).decision.code, 'SITE_FULL');
+});

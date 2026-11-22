@@ -6,7 +6,7 @@
 // Lease = { id, issueKey, projectKey, summary, repo, paths[], agent, ownerAccountId,
 //           ownerName, intent, createdAt, heartbeatAt, expiresAt, notes[], humanOverlapNotified? }
 
-import { parsePathList, overlaps, isWholeRepo, claimEntersProtected } from './paths.js';
+import { parsePathList, overlaps, isWholeRepo, claimEntersProtected, pathMatches } from './paths.js';
 
 export const DEFAULT_POLICY = Object.freeze({
   agentLabel: 'agent-ok',
@@ -18,7 +18,13 @@ export const DEFAULT_POLICY = Object.freeze({
   allowWholeRepo: false,
   respectHumanInProgress: true,
   protectedPaths: ['**/migrations/**', 'infra/**', '.github/workflows/**'],
+  personReserveHours: 8,
 });
+
+// One record holds every active lease on the site (that is what makes grants
+// linearizable). Keep it far below the Custom Entity value limit.
+export const MAX_ACTIVE_PER_SITE = 150;
+export const PERSON = 'person';
 
 export function resolvePolicy(stored) {
   const p = { ...DEFAULT_POLICY, ...(stored || {}) };
@@ -32,6 +38,7 @@ export function resolvePolicy(stored) {
   p.requireLabel = p.requireLabel !== false;
   p.allowWholeRepo = p.allowWholeRepo === true;
   p.respectHumanInProgress = p.respectHumanInProgress !== false;
+  p.personReserveHours = int(p.personReserveHours, 1, 24, DEFAULT_POLICY.personReserveHours);
   return p;
 }
 
@@ -46,8 +53,16 @@ export function normalizeAgent(agent) {
   return a.slice(0, 60);
 }
 
+// "acme/web", "https://github.com/acme/web.git", "git@github.com:acme/web.git"
+// and "ssh://git@bitbucket.org/acme/web" all name the same repository.
 export function normalizeRepo(repo) {
-  const r = String(repo ?? '').trim().toLowerCase().replace(/\.git$/, '').replace(/^https?:\/\/[^/]+\//, '');
+  const r = String(repo ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '')
+    .replace(/^[a-z+]+:\/\/(?:[^@/]+@)?[^/]+\//, '') // scheme://[user@]host/
+    .replace(/^[^@/\s]+@[^:/\s]+:/, ''); // scp-style user@host:
   return r || 'default';
 }
 
@@ -101,6 +116,7 @@ function excludedFor(patterns, policy) {
 }
 
 function describeHolder(l) {
+  if (l.kind === PERSON) return `${l.ownerName || 'a person'} (a person, working by hand)`;
   return `${l.agent}${l.ownerName ? ` (for ${l.ownerName})` : ''}`;
 }
 
@@ -120,7 +136,7 @@ export function claim(board0, req, ctx) {
   const { patterns, errors } = parsePathList(req.paths);
   const done = (decision) => ({ board, expired, decision });
 
-  if (!agent) return done(deny('BAD_REQUEST', ['Name the agent making the claim, for example "claude-code" or "codex".']));
+  if (!agent || agent === PERSON) return done(deny('BAD_REQUEST', ['Name the agent making the claim, for example "claude-code" or "codex".']));
   if (!accountId) return done(deny('BAD_REQUEST', ['No signed-in Atlassian user: an agent must act on behalf of a person.']));
   if (errors.length) return done(deny('BAD_PATHS', errors));
   if (!patterns.length)
@@ -164,6 +180,9 @@ export function claim(board0, req, ctx) {
       })
     );
   }
+
+  if (activeLeases(board, now).length >= MAX_ACTIVE_PER_SITE)
+    return done(deny('SITE_FULL', [`This site already has ${MAX_ACTIVE_PER_SITE} active leases. Release finished work first.`]));
 
   const mine = activeLeases(board, now).filter((l) => l.agent === agent && l.ownerAccountId === accountId);
   if (mine.length >= policy.maxActivePerAgent)
@@ -228,6 +247,61 @@ export function claim(board0, req, ctx) {
   return { board: next, expired, decision: { granted: true, code: 'GRANTED', lease } };
 }
 
+// A person reserves the paths they are changing by hand for a work item, so
+// agents working on OTHER work items stay out of those files.
+export function reserve(board0, req, ctx) {
+  const { now, accountId, ownerName = null, issue, policy: rawPolicy, newId } = ctx;
+  const policy = resolvePolicy(rawPolicy);
+  const { board, expired } = sweep(board0, now);
+  const done = (decision, b = board) => ({ board: b, expired, decision });
+  const repo = normalizeRepo(req.repo);
+  const { patterns, errors } = parsePathList(req.paths);
+  if (!accountId) return done(deny('BAD_REQUEST', ['Sign in to reserve paths.']));
+  if (errors.length) return done(deny('BAD_PATHS', errors));
+  if (!patterns.length) return done(deny('BAD_PATHS', ['Name the folders or files you are changing, for example "src/auth".']));
+  if (patterns.length > policy.maxPathsPerLease) return done(deny('TOO_BROAD', [`At most ${policy.maxPathsPerLease} paths.`]));
+  if (patterns.some(isWholeRepo)) return done(deny('TOO_BROAD', ['Reserving the whole repository blocks every agent. Name the folders you are changing.']));
+  if (!issue) return done(deny('NOT_FOUND', ['Work item not found.']));
+  if (issue.statusCategory === 'done') return done(deny('ISSUE_DONE', [`${issue.key} is already done.`]));
+
+  const existing = leaseForIssue(board, issue.key, now);
+  if (existing && !(existing.kind === PERSON && existing.ownerAccountId === accountId))
+    return done(deny('ISSUE_LEASED', [`${describeHolder(existing)} holds ${issue.key}. Take it back first if you want to work on it yourself.`], { holder: publicLease(existing) }));
+
+  const hits = collisionsWith(board, { repo, patterns, excludeId: existing?.id }, now);
+  if (hits.length)
+    return done(
+      deny(
+        'PATH_COLLISION',
+        hits.map((h) => `${h.lease.issueKey} (${describeHolder(h.lease)}) already covers ${h.pairs.map((p) => `"${p.theirs}"`).join(', ')}.`),
+        { collisions: hits.map((h) => ({ ...publicLease(h.lease), overlaps: h.pairs })), retryAfter: Math.min(...hits.map((h) => h.lease.expiresAt)) }
+      )
+    );
+
+  const hours = Math.min(policy.personReserveHours, Math.max(1, Math.round(+req.hours || policy.personReserveHours)));
+  const lease = {
+    id: existing?.id || newId,
+    kind: PERSON,
+    issueKey: issue.key,
+    projectKey: issue.projectKey,
+    summary: (issue.summary || '').slice(0, 200),
+    repo,
+    paths: patterns,
+    excluded: [],
+    agent: PERSON,
+    ownerAccountId: accountId,
+    ownerName,
+    intent: String(req.intent || '').slice(0, 500),
+    createdAt: existing?.createdAt || now,
+    heartbeatAt: now,
+    expiresAt: now + hours * 60 * MIN,
+    notes: existing?.notes || [],
+  };
+  const next = clone(board);
+  next.leases[lease.id] = lease;
+  return done({ granted: true, code: existing ? 'RESERVATION_UPDATED' : 'RESERVED', lease }, next);
+}
+
 function ownLease(board, leaseId, accountId, now) {
   const l = board.leases[leaseId];
   if (!l || l.expiresAt <= now) return { error: deny('LEASE_GONE', [`Lease ${leaseId} is not active (it expired, was released or was revoked). Claim the work again.`]) };
@@ -272,7 +346,10 @@ export function heartbeat(board0, req, ctx) {
     }
   }
 
-  const extendMs = ttlMs(req.extendMinutes, policy);
+  const extendMs =
+    lease.kind === PERSON
+      ? Math.min(policy.personReserveHours * 60, Math.max(5, +req.extendMinutes || policy.personReserveHours * 60)) * MIN
+      : ttlMs(req.extendMinutes, policy);
   const notes = req.note ? [...lease.notes, { at: now, text: String(req.note).slice(0, 500) }].slice(-20) : lease.notes;
   const updated = { ...lease, paths, excluded: excludedFor(paths, policy), notes, heartbeatAt: now, expiresAt: Math.max(lease.expiresAt, now + extendMs) };
   const next = clone(board);
@@ -296,8 +373,19 @@ export function release(board0, req, ctx) {
     outcome,
     prUrl: req.prUrl ? String(req.prUrl).slice(0, 500) : null,
     summaryOfWork: String(req.summary || '').slice(0, 2000),
+    scopeCheck: req.changedFiles ? checkScope(lease, req.changedFiles, resolvePolicy(ctx.policy)) : null,
   };
   return { board: next, expired, decision: { granted: true, code: 'RELEASED', lease: record } };
+}
+
+// Did the agent stay inside its lease? Compares the files its change touched
+// (e.g. `git diff --name-only main...HEAD`) with the leased paths.
+export function checkScope(lease, changedFiles, policy) {
+  const files = parsePathList(changedFiles).patterns.slice(0, 2000);
+  const forbidden = [...new Set([...(lease.excluded || []), ...(policy?.protectedPaths || [])])];
+  const outside = files.filter((f) => !lease.paths.some((p) => pathMatches(p, f)));
+  const protectedTouched = files.filter((f) => forbidden.some((p) => pathMatches(p, f)));
+  return { checked: files.length, outside: outside.slice(0, 50), protectedTouched: protectedTouched.slice(0, 50), clean: !outside.length && !protectedTouched.length };
 }
 
 // A person takes the work back from an agent. Permission is decided by the
@@ -352,10 +440,12 @@ export function whoHolds(board, { paths, repo }, now) {
 export function publicLease(l) {
   return {
     leaseId: l.id,
+    kind: l.kind === PERSON ? PERSON : 'agent',
     issueKey: l.issueKey,
     summary: l.summary,
     agent: l.agent,
     owner: l.ownerName || null,
+    ownerAccountId: l.ownerAccountId || null,
     repo: l.repo,
     paths: l.paths,
     mustNotTouch: l.excluded || [],

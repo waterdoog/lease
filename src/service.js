@@ -119,21 +119,40 @@ export async function heartbeatLease(input, { accountId }) {
   const policy = await policyFor(l0?.projectKey || 'NONE');
   const result = await store.update((board) => core.heartbeat(board, input, { now, accountId, policy }));
   await afterExpired(result.expired, now);
-  const d = result.decision;
+  const d = await explainGone(result.decision, input.leaseId, now);
   if (d.granted) await quietly('property', () => jira.setLeaseProperty(d.lease.issueKey, leaseProperty(d.lease)));
   if (!d.granted) await quietly('event', () => store.logEvent({ type: 'denied', code: d.code, issueKey: l0?.issueKey, agent: l0?.agent, reasons: d.reasons, at: now }));
   return present(d);
 }
 
+// If a person took the lease back, tell the agent who, when and why, and record
+// that the agent has now been told (the Jira panel shows "stopping" until then).
+async function explainGone(d, leaseId, now) {
+  if (d.granted || d.code !== 'LEASE_GONE' || !leaseId) return d;
+  const key = `revoked:${leaseId}`;
+  const t = await kvs.get(key).catch(() => null);
+  if (!t) return d;
+  if (!t.acknowledgedAt) await quietly('tombstone', () => kvs.set(key, { ...t, acknowledgedAt: now }, { ttl: { unit: 'DAYS', value: 2 } }));
+  return {
+    ...d,
+    code: 'LEASE_GONE',
+    reasons: [
+      `${t.byName || 'A person'} took ${t.issueKey} back at ${core.fmtTime(t.at)}${t.reason ? `: "${t.reason}"` : '.'} Stop changing files for ${t.issueKey} now and do not push further commits for it.`,
+    ],
+  };
+}
+
 export async function releaseLease(input, { accountId }) {
   const now = Date.now();
-  const result = await store.update((board) => core.release(board, input, { now, accountId }));
+  const board0 = await store.readBoard();
+  const policy = await policyFor(board0.leases[input.leaseId]?.projectKey || 'NONE');
+  const result = await store.update((board) => core.release(board, input, { now, accountId, policy }));
   await afterExpired(result.expired, now);
-  const d = result.decision;
+  const d = await explainGone(result.decision, input.leaseId, now);
   if (d.granted) {
     const l = d.lease;
     await quietly('history', () => store.saveHistory(l));
-    await quietly('event', () => store.logEvent({ type: 'released', outcome: l.outcome, issueKey: l.issueKey, agent: l.agent, owner: l.ownerName, prUrl: l.prUrl, at: now }));
+    await quietly('event', () => store.logEvent({ type: 'released', outcome: l.outcome, issueKey: l.issueKey, agent: l.agent, owner: l.ownerName, prUrl: l.prUrl, scopeClean: l.scopeCheck ? l.scopeCheck.clean : null, at: now }));
     await quietly('property', () => jira.setLeaseProperty(l.issueKey, null));
     const mins = Math.max(1, Math.round((l.endedAt - l.createdAt) / 60000));
     await quietly('comment', () =>
@@ -141,6 +160,17 @@ export async function releaseLease(input, { accountId }) {
         [{ text: `Agent finished: ${l.outcome}. `, strong: true }, `${l.agent} held this work item for ${mins} min and released it.`],
         l.summaryOfWork ? `What it did: ${l.summaryOfWork}` : null,
         l.prUrl ? ['Pull request: ', { text: l.prUrl, link: l.prUrl }] : null,
+        l.scopeCheck
+          ? l.scopeCheck.clean
+            ? `Scope check: all ${l.scopeCheck.checked} changed files are inside the lease.`
+            : [
+                { text: 'Scope check failed. ', strong: true },
+                [
+                  l.scopeCheck.outside.length ? `${l.scopeCheck.outside.length} changed file(s) outside the lease: ${l.scopeCheck.outside.slice(0, 8).join(', ')}.` : '',
+                  l.scopeCheck.protectedTouched.length ? ` Protected path(s) changed: ${l.scopeCheck.protectedTouched.slice(0, 8).join(', ')}.` : '',
+                ].join(''),
+              ]
+          : null,
         l.outcome === 'done' ? 'A person should review the change before this work item is closed.' : null,
       ].filter(Boolean))
     );
@@ -161,6 +191,10 @@ export async function revokeLease(input, { accountId }) {
   if (d.granted) {
     await quietly('history', () => store.saveHistory(d.lease));
     await quietly('event', () => store.logEvent({ type: 'revoked', issueKey: d.lease.issueKey, agent: d.lease.agent, by: me.displayName, at: now }));
+    if (d.lease.kind !== core.PERSON)
+      await quietly('tombstone', () =>
+        kvs.set(`revoked:${d.lease.id}`, { leaseId: d.lease.id, issueKey: d.lease.issueKey, agent: d.lease.agent, byName: me.displayName, reason: d.lease.reason, at: now }, { ttl: { unit: 'DAYS', value: 2 } })
+      );
     await quietly('property', () => jira.setLeaseProperty(d.lease.issueKey, null));
     await quietly('comment', () =>
       jira.comment(d.lease.issueKey, [
@@ -170,6 +204,49 @@ export async function revokeLease(input, { accountId }) {
     );
   }
   return present(d);
+}
+
+export async function reservePaths(input, { accountId }) {
+  const now = Date.now();
+  const issueKey = jira.cleanKey(input.issueKey);
+  const [issue, me, policy] = await Promise.all([jira.getIssue(issueKey), jira.myself().catch(() => ({ displayName: null })), policyFor(projectOf(issueKey))]);
+  const id = newId();
+  const result = await store.update((board) => core.reserve(board, { ...input, issueKey }, { now, accountId, ownerName: me.displayName, issue, policy, newId: id }));
+  await afterExpired(result.expired, now);
+  const d = result.decision;
+  await quietly('event', () =>
+    store.logEvent({ type: d.granted ? 'reserved' : 'denied', code: d.code, issueKey, agent: core.PERSON, owner: me.displayName, reasons: d.reasons, at: now })
+  );
+  if (d.granted) await quietly('property', () => jira.setLeaseProperty(issueKey, { ...leaseProperty(d.lease), person: true }));
+  return present(d);
+}
+
+// Revocations the agent has not yet heard about (it learns on its next call).
+export async function pendingStops(issueKey) {
+  const all = await store.listPrefix('revoked:', { limit: 200 });
+  return all.filter((t) => t.issueKey === issueKey).map((t) => ({ agent: t.agent, by: t.byName, at: t.at, acknowledgedAt: t.acknowledgedAt || null }));
+}
+
+// Try Lease without connecting an agent: two simulated agents, working for the
+// person who clicks, go through the real claim/heartbeat code on sample work.
+export async function simulateAgents(projectKey, { accountId }) {
+  const pk = String(projectKey || '').trim().toUpperCase();
+  const found = await findWork({ projectKey: pk, limit: 25 });
+  const pick = (re) => found.available.find((a) => re.test(a.summary));
+  const a = pick(/rate limit/i) || found.available[0];
+  const b = pick(/refresh token/i) || found.available.find((x) => x !== a);
+  const c = pick(/invoice|rounding/i) || found.available.find((x) => x !== a && x !== b);
+  if (!a || !b || !c) return { ok: false, reasons: [`Need three work items open to agents in ${pk}. Add sample work items first.`] };
+  const steps = [];
+  const log = (who, what, r) => steps.push({ who, what, granted: r.granted, result: r.result, says: (r.reasons || [])[0] || (r.lease ? `lease ${r.lease.leaseId} until ${r.lease.expiresAt}` : '') });
+  const r1 = await claimWork({ issueKey: a.issueKey, agent: 'sim-claude', repo: 'acme/web', paths: 'src/auth/**, tests/auth/**', intent: 'Rate limit on /login (simulated agent)' }, { accountId });
+  log('sim-claude', `claims ${a.issueKey} for src/auth/**`, r1);
+  if (r1.granted) log('sim-claude', 'sends a heartbeat', await heartbeatLease({ leaseId: r1.lease.leaseId, note: 'Limiter middleware drafted (simulated)' }, { accountId }));
+  log('sim-codex', `claims ${b.issueKey} for src/auth/session.ts`, await claimWork({ issueKey: b.issueKey, agent: 'sim-codex', repo: 'acme/web', paths: 'src/auth/session.ts', intent: 'Rotate refresh tokens (simulated agent)' }, { accountId }));
+  log('sim-codex', `claims ${c.issueKey} for src/billing/** instead`, await claimWork({ issueKey: c.issueKey, agent: 'sim-codex', repo: 'acme/web', paths: 'src/billing/**', intent: 'Fix invoice rounding (simulated agent)' }, { accountId }));
+  const d = pick(/rename|column|migration/i) || found.available.find((x) => ![a, b, c].includes(x));
+  if (d) log('sim-cursor', `would claim ${d.issueKey} for db/migrations/0042.sql (checked, not taken)`, await dryRunClaim({ issueKey: d.issueKey, agent: 'sim-cursor', repo: 'acme/web', paths: 'db/migrations/0042.sql' }, { accountId }));
+  return { ok: true, steps };
 }
 
 export async function checkPaths(input) {

@@ -36,7 +36,7 @@ export const heartbeat = wrap((p, who) =>
 );
 
 export const releaseWork = wrap((p, who) =>
-  svc.releaseLease({ leaseId: p.leaseId, outcome: p.outcome, prUrl: p.prUrl, summary: p.summary }, who)
+  svc.releaseLease({ leaseId: p.leaseId, outcome: p.outcome, prUrl: p.prUrl, summary: p.summary, changedFiles: p.changedFiles }, who)
 );
 
 export const checkPaths = wrap((p) => svc.checkPaths({ paths: p.paths, repo: p.repo }));
@@ -58,7 +58,8 @@ resolver.define('issueView', async ({ context }) => {
   const events = (await svc.store.listPrefix('evt:', { since: Date.now() - 7 * 864e5, limit: 300 }))
     .filter((e) => e.issueKey === issueKey)
     .slice(0, 12);
-  return { issueKey, issue, lease: st.activeLeases[0] || null, policy, events, now: Date.now() };
+  const stops = await svc.pendingStops(issueKey);
+  return { issueKey, issue, lease: st.activeLeases[0] || null, policy, events, stops, now: Date.now() };
 });
 
 resolver.define('revoke', async ({ payload, context }) => svc.revokeLease({ leaseId: payload.leaseId, reason: payload.reason }, { accountId: context.accountId }));
@@ -77,6 +78,12 @@ resolver.define('dryRun', async ({ payload, context }) =>
   svc.dryRunClaim({ issueKey: payload.issueKey, agent: payload.agent, paths: payload.paths, repo: payload.repo }, { accountId: context.accountId })
 );
 resolver.define('createSampleWork', async ({ payload }) => svc.createSampleWork(payload.projectKey));
+
+resolver.define('reserve', async ({ payload, context }) =>
+  svc.reservePaths({ issueKey: payload.issueKey || context.extension?.issue?.key, paths: payload.paths, repo: payload.repo, hours: payload.hours }, { accountId: context.accountId })
+);
+resolver.define('releaseMine', async ({ payload, context }) => svc.releaseLease({ leaseId: payload.leaseId, outcome: 'handed-back', summary: 'Released by hand.' }, { accountId: context.accountId }));
+resolver.define('simulate', async ({ payload, context }) => svc.simulateAgents(payload.projectKey, { accountId: context.accountId }));
 
 resolver.define('getPolicy', async ({ payload }) => svc.getPolicy(payload.projectKey));
 resolver.define('savePolicy', async ({ payload }) => svc.savePolicy(payload.projectKey, payload.policy));

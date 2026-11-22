@@ -71,7 +71,7 @@ function LiveTable({ leases, now }) {
           key: l.leaseId,
           cells: [
             { key: 'issue', content: <Stack space="space.0">{issueLink(l.issueKey)}<Text>{l.summary}</Text></Stack> },
-            { key: 'agent', content: <Stack space="space.0"><Strong>{l.agent}</Strong><Text>{l.owner ? `for ${l.owner}` : ''}</Text></Stack> },
+            { key: 'agent', content: l.kind === 'person' ? <Stack space="space.0"><Strong>{l.owner}</Strong><Lozenge appearance="new">person, by hand</Lozenge></Stack> : <Stack space="space.0"><Strong>{l.agent}</Strong><Text>{l.owner ? `for ${l.owner}` : ''}</Text></Stack> },
             { key: 'paths', content: <Inline space="space.050" shouldWrap>{l.paths.map((p) => <Code key={p}>{p}</Code>)}</Inline> },
             { key: 'hb', content: <Lozenge appearance={stale ? 'moved' : 'success'}>{ago(hb, now)}</Lozenge> },
             { key: 'exp', content: <Text>{until(Date.parse(l.expiresAt), now)}</Text> },
@@ -208,6 +208,8 @@ function TryIt() {
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const run = async () => setResult(await invoke('dryRun', form));
   const seed = async () => setSample(await invoke('createSampleWork', { projectKey: sampleKey }));
+  const [sim, setSim] = useState(null);
+  const simulate = async () => setSim(await invoke('simulate', { projectKey: sampleKey }));
   return (
     <Stack space="space.300">
       <Stack space="space.100">
@@ -249,6 +251,30 @@ function TryIt() {
           <Button onClick={seed}>Add sample work items</Button>
         </Inline>
         {sample ? <SectionMessage appearance={sample.ok ? 'success' : 'error'}><Text>{sample.ok ? `Created ${sample.created.join(', ')}.` : sample.reasons.join(' ')}</Text></SectionMessage> : null}
+      </Stack>
+      <Stack space="space.100">
+        <Heading size="small">No agent connected yet? Simulate two</Heading>
+        <Text>Runs two simulated agents (sim-claude and sim-codex, working for you) through the real claim and heartbeat code on the project above: one claims src/auth, the other collides and moves to billing work, and a migration is checked. Their leases are real, expire in 30 minutes, and show up in the Live tab and on the work items.</Text>
+        <Inline>
+          <Button onClick={simulate}>Simulate two agents</Button>
+        </Inline>
+        {sim ? (
+          sim.ok ? (
+            <DynamicTable
+              head={{ cells: [{ key: 'w', content: 'Agent' }, { key: 'd', content: 'Does' }, { key: 'r', content: 'Lease answers' }] }}
+              rows={sim.steps.map((s, i) => ({
+                key: `s${i}`,
+                cells: [
+                  { key: 'w', content: <Strong>{s.who}</Strong> },
+                  { key: 'd', content: <Text>{s.what}</Text> },
+                  { key: 'r', content: <Stack space="space.050"><Lozenge appearance={s.granted ? 'success' : 'removed'}>{s.granted ? 'granted' : s.result}</Lozenge><Text>{s.says}</Text></Stack> },
+                ],
+              }))}
+            />
+          ) : (
+            <SectionMessage appearance="warning"><Text>{sim.reasons.join(' ')}</Text></SectionMessage>
+          )
+        ) : null}
       </Stack>
     </Stack>
   );

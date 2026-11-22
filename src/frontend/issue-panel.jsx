@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import ForgeReconciler, {
   Box,
   Button,
@@ -21,6 +21,7 @@ import ForgeReconciler, {
   Textfield,
   Toggle,
   Label,
+  useProductContext,
   xcss,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
@@ -28,35 +29,67 @@ import { ago, until, eventLine } from './format';
 
 const card = xcss({ padding: 'space.150', borderRadius: 'border.radius.200', backgroundColor: 'color.background.neutral.subtle', borderColor: 'color.border', borderStyle: 'solid', borderWidth: 'border.width' });
 
-function LeaseCard({ lease, now, onRevoke }) {
+// Server time, ticking locally once a second between refreshes.
+function useClock(serverNow) {
+  const skew = useRef(0);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (serverNow) skew.current = serverNow - Date.now();
+  }, [serverNow]);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now() + skew.current), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return now;
+}
+
+function Paths({ lease }) {
+  return (
+    <Stack space="space.050">
+      <Text>
+        <Strong>Paths{lease.repo && lease.repo !== 'default' ? ` in ${lease.repo}` : ''}</Strong>
+      </Text>
+      <Inline space="space.050" shouldWrap>
+        {lease.paths.map((p) => (
+          <Code key={p}>{p}</Code>
+        ))}
+      </Inline>
+      {lease.mustNotTouch?.length ? (
+        <Inline space="space.050" shouldWrap alignBlock="center">
+          <Text>Must not touch (people only):</Text>
+          {lease.mustNotTouch.map((p) => (
+            <Lozenge key={p} appearance="removed">
+              {p}
+            </Lozenge>
+          ))}
+        </Inline>
+      ) : null}
+    </Stack>
+  );
+}
+
+function LeaseCard({ lease, now, mine, onRevoke, onRelease }) {
   const exp = Date.parse(lease.expiresAt);
-  const since = Date.parse(lease.since);
   const total = Math.max(1, exp - Date.parse(lease.lastHeartbeat));
   const left = Math.max(0, exp - now);
+  const person = lease.kind === 'person';
   return (
     <Box xcss={card}>
       <Stack space="space.100">
         <Inline space="space.100" alignBlock="center">
-          <Lozenge appearance="inprogress" isBold>Agent at work</Lozenge>
+          <Lozenge appearance={person ? 'new' : 'inprogress'} isBold>
+            {person ? 'Reserved by a person' : 'Agent at work'}
+          </Lozenge>
           <Text>
-            <Strong>{lease.agent}</Strong>
-            {lease.owner ? ` for ${lease.owner}` : ''}
+            <Strong>{person ? lease.owner : lease.agent}</Strong>
+            {!person && lease.owner ? ` for ${lease.owner}` : person ? ' is changing these files by hand' : ''}
           </Text>
         </Inline>
         <Text>
-          Since {ago(since, now)} · last heartbeat {ago(Date.parse(lease.lastHeartbeat), now)} · expires {until(exp, now)}
+          Since {ago(Date.parse(lease.since), now)} · {person ? 'renewed' : 'last heartbeat'} {ago(Date.parse(lease.lastHeartbeat), now)} · ends {until(exp, now)}
         </Text>
         <ProgressBar value={Math.min(1, left / total)} appearance={left < 5 * 60000 ? 'warning' : 'default'} ariaLabel="Time left on the lease" />
-        <Stack space="space.050">
-          <Text>
-            <Strong>Paths{lease.repo && lease.repo !== 'default' ? ` in ${lease.repo}` : ''}</Strong>
-          </Text>
-          <Inline space="space.050" shouldWrap>
-            {lease.paths.map((p) => (
-              <Code key={p}>{p}</Code>
-            ))}
-          </Inline>
-        </Stack>
+        <Paths lease={lease} />
         {lease.intent ? (
           <Text>
             <Strong>Plan: </Strong>
@@ -75,17 +108,48 @@ function LeaseCard({ lease, now, onRevoke }) {
             ))}
           </Stack>
         ) : null}
-        <Inline>
-          <Button appearance="warning" onClick={onRevoke}>
-            Take back from agent
-          </Button>
+        <Inline space="space.100">
+          {mine ? (
+            <Button onClick={onRelease}>{person ? 'Release my reservation' : 'End my agent’s lease'}</Button>
+          ) : null}
+          {!person ? (
+            <Button appearance="warning" onClick={onRevoke}>
+              Take back from agent
+            </Button>
+          ) : null}
         </Inline>
       </Stack>
     </Box>
   );
 }
 
+function ReserveForm({ onReserve, busy }) {
+  const [paths, setPaths] = useState('');
+  const [repo, setRepo] = useState('');
+  return (
+    <Stack space="space.075">
+      <Text>
+        <Strong>Working on this by hand?</Strong> Reserve the folders you are changing, so agents on other work items stay out of them.
+      </Text>
+      <Inline space="space.100" alignBlock="end" shouldWrap>
+        <Stack space="space.050">
+          <Label labelFor="rp">Paths</Label>
+          <Textfield id="rp" value={paths} onChange={(e) => setPaths(e.target.value)} placeholder="src/auth, tests/auth" />
+        </Stack>
+        <Stack space="space.050">
+          <Label labelFor="rr">Repository</Label>
+          <Textfield id="rr" value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="acme/web" />
+        </Stack>
+        <Button isDisabled={busy || !paths.trim()} onClick={() => onReserve(paths, repo)}>
+          Reserve for 8 hours
+        </Button>
+      </Inline>
+    </Stack>
+  );
+}
+
 function App() {
+  const ctx = useProductContext();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -104,38 +168,43 @@ function App() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 15000);
+    const t = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') load();
+    }, 30000);
     return () => clearInterval(t);
   }, [load]);
+
+  const now = useClock(data?.now);
 
   if (error) return <SectionMessage appearance="error" title="Lease could not load">{error}</SectionMessage>;
   if (!data) return <Spinner label="Loading lease" />;
 
-  const { lease, issue, policy, events, now } = data;
+  const { lease, issue, policy, events, stops = [] } = data;
   const ready = !!issue?.labels?.includes(policy.agentLabel);
+  const mine = !!lease && !!ctx?.accountId && lease.ownerAccountId === ctx.accountId;
 
-  const toggleReady = async () => {
+  const act = async (fn) => {
     setBusy(true);
     try {
-      await invoke('setAgentReady', { issueKey: data.issueKey, ready: !ready });
+      const r = await fn();
+      if (r && r.granted === false) setMessage({ ok: false, text: (r.reasons || []).join(' ') });
+      else if (r && r.text) setMessage(r);
       await load();
     } finally {
       setBusy(false);
     }
   };
 
-  const doRevoke = async () => {
-    setBusy(true);
-    try {
+  const doRevoke = () =>
+    act(async () => {
       const r = await invoke('revoke', { leaseId: lease.leaseId, reason });
-      setMessage(r.granted ? { ok: true, text: `Taken back from ${lease.agent}. It will be told on its next heartbeat.` } : { ok: false, text: r.reasons?.join(' ') || 'Could not take it back.' });
       setRevokeOpen(false);
       setReason('');
-      await load();
-    } finally {
-      setBusy(false);
-    }
-  };
+      return r.granted ? { ok: true, text: `Taken back from ${lease.agent}.` } : r;
+    });
+
+  const pending = stops.filter((s) => !s.acknowledgedAt);
+  const acknowledged = stops.filter((s) => s.acknowledgedAt);
 
   return (
     <Stack space="space.200">
@@ -145,35 +214,58 @@ function App() {
         </SectionMessage>
       ) : null}
 
+      {pending.map((s, i) => (
+        <SectionMessage key={`p${i}`} appearance="warning" title={`Stopping ${s.agent}`}>
+          <Text>
+            {s.by || 'Someone'} took this back {ago(s.at, now)}. The agent has not checked in since, so it may still be editing locally. It is told to stop on its next heartbeat (at most 10 minutes); wait before pulling its branch.
+          </Text>
+        </SectionMessage>
+      ))}
+      {acknowledged.slice(0, 1).map((s, i) => (
+        <SectionMessage key={`a${i}`} appearance="information">
+          <Text>
+            {s.agent} was told to stop {ago(s.acknowledgedAt, now)} and has been cut off from this work item.
+          </Text>
+        </SectionMessage>
+      ))}
+
       {lease ? (
-        <LeaseCard lease={lease} now={now} onRevoke={() => setRevokeOpen(true)} />
+        <LeaseCard
+          lease={lease}
+          now={now}
+          mine={mine}
+          onRevoke={() => setRevokeOpen(true)}
+          onRelease={() => act(() => invoke('releaseMine', { leaseId: lease.leaseId }).then((r) => (r.granted ? { ok: true, text: 'Released.' } : r)))}
+        />
       ) : (
-        <Stack space="space.100">
+        <Stack space="space.150">
           <Inline space="space.100" alignBlock="center">
             <Lozenge appearance={ready ? 'success' : 'default'}>{ready ? 'Open to agents' : 'People only'}</Lozenge>
-            <Text>No agent holds this work item.</Text>
+            <Text>Nobody holds this work item in Lease.</Text>
           </Inline>
           {issue?.statusCategory === 'indeterminate' && issue?.assigneeName ? (
-            <Text>
-              {issue.assigneeName} has it in progress, so agents will be refused while that is true.
-            </Text>
+            <Text>{issue.assigneeName} has it in progress, so agents are refused for this work item.</Text>
           ) : null}
+          <ReserveForm
+            busy={busy}
+            onReserve={(paths, repo) =>
+              act(() => invoke('reserve', { issueKey: data.issueKey, paths, repo }).then((r) => (r.granted ? { ok: true, text: 'Reserved. Agents on other work items will be refused for these paths.' } : r)))
+            }
+          />
         </Stack>
       )}
 
       <Inline space="space.100" alignBlock="center">
-        <Toggle id="agent-ready" isChecked={ready} isDisabled={busy} onChange={toggleReady} />
-        <Label labelFor="agent-ready">
-          Safe for AI coding agents (label "{policy.agentLabel}")
-        </Label>
+        <Toggle id="agent-ready" isChecked={ready} isDisabled={busy} onChange={() => act(() => invoke('setAgentReady', { issueKey: data.issueKey, ready: !ready }))} />
+        <Label labelFor="agent-ready">Safe for AI coding agents (label "{policy.agentLabel}")</Label>
       </Inline>
 
       <Stack space="space.050">
-        <Heading size="xsmall">Agent activity, last 7 days</Heading>
+        <Heading size="xsmall">Activity, last 7 days</Heading>
         {events.length ? (
           events.map((e, i) => (
             <Inline key={i} space="space.100" alignBlock="start">
-              <Lozenge appearance={e.type === 'denied' ? 'removed' : e.type === 'granted' ? 'inprogress' : e.type === 'released' ? 'success' : 'moved'}>
+              <Lozenge appearance={e.type === 'denied' ? 'removed' : e.type === 'granted' || e.type === 'reserved' ? 'inprogress' : e.type === 'released' ? 'success' : 'moved'}>
                 {e.type === 'denied' ? 'refused' : e.type}
               </Lozenge>
               <Text>
@@ -194,8 +286,8 @@ function App() {
             </ModalHeader>
             <ModalBody>
               <Stack space="space.100">
-                <Text>The lease ends now. The agent is told on its next heartbeat and must stop changing these paths.</Text>
-                <Label labelFor="reason">Reason (posted on the work item)</Label>
+                <Text>The lease ends now and its paths are free. The agent is told to stop on its next heartbeat; until then it may still be editing on its own machine.</Text>
+                <Label labelFor="reason">Reason (posted on the work item and sent to the agent)</Label>
                 <Textfield id="reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="I'll take this one myself" />
               </Stack>
             </ModalBody>

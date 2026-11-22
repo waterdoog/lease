@@ -30,12 +30,14 @@ export function eventLine(e) {
   switch (e.type) {
     case 'granted':
       return `${who}${e.owner ? ` (for ${e.owner})` : ''} got the lease`;
+    case 'reserved':
+      return `${e.owner || 'A person'} reserved paths to work by hand`;
     case 'renewed':
       return `${who} re-claimed its lease`;
     case 'denied':
       return `${who} was refused: ${CODES[e.code] || e.code}${e.blockedBy?.length ? ` (${e.blockedBy.join(', ')})` : ''}`;
     case 'released':
-      return `${who} released it: ${e.outcome}${e.prUrl ? ' — PR linked' : ''}`;
+      return `${who} released it: ${e.outcome}${e.prUrl ? ' — PR linked' : ''}${e.scopeClean === false ? ' — touched files outside its lease' : e.scopeClean ? ' — stayed inside its lease' : ''}`;
     case 'expired':
       return `${who} went silent; lease expired and work returned to the queue`;
     case 'revoked':

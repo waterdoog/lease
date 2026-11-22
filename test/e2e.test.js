@@ -192,3 +192,58 @@ test('dry run answers without taking anything; sample work is admin-only', async
   assert.equal(jira.issues[made.created[0]].type, '10002', 'uses a standard (non sub-task) work type');
   assert.equal(made.created.filter((k) => jira.issues[k].labels.includes('agent-ok')).length, 5);
 });
+
+test('revocation: the panel shows "stopping" until the agent hears it, and the agent is told who and why', async () => {
+  const resolve = app.resolverHandler;
+  issue('APP-120', 'Search endpoint pagination');
+  const c = await app.claimWork({ issueKey: 'APP-120', agent: 'claude-code', paths: 'src/search', repo: 'acme/web' }, as('yu'));
+  jira.currentUser = 'sam';
+  await resolve('revoke', { leaseId: c.lease.leaseId, reason: 'Pairing on this with Mei' }, { accountId: 'sam' });
+  let panel = await resolve('issueView', {}, { accountId: 'sam', extension: { issue: { key: 'APP-120' } } });
+  assert.equal(panel.stops.length, 1);
+  assert.equal(panel.stops[0].acknowledgedAt, null);
+  const hb = await app.heartbeat({ leaseId: c.lease.leaseId }, as('yu'));
+  assert.equal(hb.result, 'LEASE_GONE');
+  assert.match(hb.reasons[0], /Sam Ortiz took APP-120 back .*"Pairing on this with Mei"/);
+  panel = await resolve('issueView', {}, { accountId: 'sam', extension: { issue: { key: 'APP-120' } } });
+  assert.ok(panel.stops[0].acknowledgedAt);
+});
+
+test('a person reserves paths from the panel and agents elsewhere are refused', async () => {
+  const resolve = app.resolverHandler;
+  issue('APP-121', 'Hand-written OAuth refactor', []);
+  issue('APP-122', 'Add login audit log');
+  jira.currentUser = 'sam';
+  const r = await resolve('reserve', { issueKey: 'APP-121', paths: 'src/oauth', repo: 'git@github.com:acme/web.git' }, { accountId: 'sam' });
+  assert.equal(r.granted, true, JSON.stringify(r));
+  const c = await app.claimWork({ issueKey: 'APP-122', agent: 'codex', paths: 'src/oauth/audit.ts', repo: 'acme/web' }, as('mei'));
+  assert.equal(c.result, 'PATH_COLLISION');
+  assert.match(c.reasons[0], /Sam Ortiz \(a person, working by hand\)/);
+  const panel = await resolve('issueView', {}, { accountId: 'sam', extension: { issue: { key: 'APP-121' } } });
+  assert.equal(panel.lease.kind, 'person');
+  assert.equal(panel.lease.ownerAccountId, 'sam');
+  jira.currentUser = 'sam';
+  assert.equal((await resolve('releaseMine', { leaseId: panel.lease.leaseId }, { accountId: 'sam' })).granted, true);
+});
+
+test('release with changed files posts a scope check on the work item', async () => {
+  issue('APP-123', 'Tidy error messages');
+  const c = await app.claimWork({ issueKey: 'APP-123', agent: 'codex', paths: 'src/errors', repo: 'acme/web' }, as('mei'));
+  const r = await app.releaseWork({ leaseId: c.lease.leaseId, outcome: 'done', changedFiles: 'src/errors/messages.ts, src/http/cache.ts', prUrl: 'https://github.com/acme/web/pull/91' }, as('mei'));
+  assert.equal(r.granted, true);
+  assert.match(jira.comments['APP-123'].at(-1).text, /Scope check failed.*src\/http\/cache\.ts/);
+});
+
+test('simulate two agents runs the real flow on sample work', async () => {
+  const resolve = app.resolverHandler;
+  jira.currentUser = 'yu';
+  await resolve('createSampleWork', { projectKey: 'SIM' }, { accountId: 'yu' }).catch(() => null);
+  // SIM project is empty in the fake, so create sample work there first
+  for (const k of Object.keys(jira.issues)) if (k.startsWith('SIM-')) delete jira.issues[k];
+  const made = await resolve('createSampleWork', { projectKey: 'SIM' }, { accountId: 'yu' });
+  assert.equal(made.ok, true);
+  const sim = await resolve('simulate', { projectKey: 'SIM' }, { accountId: 'yu' });
+  assert.equal(sim.ok, true, JSON.stringify(sim));
+  const codes = sim.steps.map((s) => (s.granted ? 'granted' : s.result));
+  assert.deepEqual(codes, ['granted', 'granted', 'PATH_COLLISION', 'granted', 'PROTECTED_PATH']);
+});
