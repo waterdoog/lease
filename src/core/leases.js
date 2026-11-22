@@ -31,6 +31,9 @@ export const DEFAULT_POLICY = Object.freeze({
   // warning to both sides (a gentler way to start). People, protected paths
   // and work in progress are always enforced.
   collisionMode: 'block',
+  // Statuses that mean "merged" before Done (e.g. "In QA", "Staging"): a pull
+  // request hold ends when the work item reaches one of them.
+  mergedStatuses: [],
 });
 
 // One record holds every active lease on the site (that is what makes grants
@@ -58,6 +61,10 @@ export function resolvePolicy(stored) {
   p.holdUntilMerged = p.holdUntilMerged !== false;
   p.reviewHoldHours = int(p.reviewHoldHours, 1, 336, DEFAULT_POLICY.reviewHoldHours);
   p.collisionMode = p.collisionMode === 'warn' ? 'warn' : 'block';
+  p.mergedStatuses = (Array.isArray(p.mergedStatuses) ? p.mergedStatuses : String(p.mergedStatuses || '').split(','))
+    .map((x) => String(x).trim())
+    .filter(Boolean)
+    .slice(0, 20);
   return p;
 }
 

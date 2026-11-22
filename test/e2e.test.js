@@ -301,3 +301,16 @@ test('people and their agents never learn about work items they cannot see', asy
   assert.equal(mine.activeLeases[0].summary, 'Rotate the signing keys after the incident');
   jira.hiddenFrom = {};
 });
+
+test('a configured "merged" status ends a pull request hold before Done', async () => {
+  const resolve = app.resolverHandler;
+  jira.currentUser = 'yu';
+  await resolve('savePolicy', { projectKey: 'APP', policy: { mergedStatuses: 'In QA, Staging' } }, { accountId: 'yu' });
+  issue('APP-140', 'Retry webhooks');
+  const c = await app.claimWork({ issueKey: 'APP-140', agent: 'codex', paths: 'src/webhooks', repo: 'acme/web' }, as('mei'));
+  await app.releaseWork({ leaseId: c.lease.leaseId, outcome: 'done', prUrl: 'https://github.com/acme/web/pull/95' }, as('mei'));
+  assert.equal((await app.leaseStatus({ issueKey: 'APP-140' }, as('yu'))).activeLeases[0].kind, 'review');
+  Object.assign(jira.issues['APP-140'], { status: 'In QA', cat: 'indeterminate' });
+  await app.onIssueUpdated({ issue: { key: 'APP-140' } });
+  assert.equal((await app.leaseStatus({ issueKey: 'APP-140' }, as('yu'))).activeLeases.length, 0);
+});

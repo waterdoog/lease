@@ -182,6 +182,7 @@ function App() {
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [message, setMessage] = useState(null);
+  const [showAll, setShowAll] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -289,9 +290,16 @@ function App() {
       </Inline>
 
       <Stack space="space.050">
-        <Heading size="xsmall">Activity, last 7 days</Heading>
+        <Inline space="space.100" alignBlock="center">
+          <Heading size="xsmall">Activity, last 7 days</Heading>
+          {events.length > 3 ? (
+            <Button appearance="subtle" spacing="compact" onClick={() => setShowAll(!showAll)}>
+              {showAll ? 'Show less' : `Show all ${events.length}`}
+            </Button>
+          ) : null}
+        </Inline>
         {events.length ? (
-          events.map((e, i) => (
+          (showAll ? events : events.slice(0, 3)).map((e, i) => (
             <Inline key={i} space="space.100" alignBlock="start">
               <Lozenge appearance={e.type === 'denied' ? 'removed' : e.type === 'granted' || e.type === 'reserved' ? 'inprogress' : e.type === 'released' ? 'success' : 'moved'}>
                 {e.type === 'denied' ? 'refused' : e.type}

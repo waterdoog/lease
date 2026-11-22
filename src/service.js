@@ -430,8 +430,10 @@ export async function onIssueChanged(issueKey) {
   if (!lease) return 'no lease';
   const issue = await jira.getIssue(issueKey, { as: 'app' });
   if (!issue) return 'issue gone';
-  if (issue.statusCategory === 'done') {
-    const result = await store.update((b) => core.releaseIssue(b, issueKey, { now }));
+  const policy = await policyFor(projectOf(issueKey));
+  const mergedStatus = lease.kind === core.REVIEW && policy.mergedStatuses.some((s) => s.toLowerCase() === String(issue.statusName).toLowerCase());
+  if (issue.statusCategory === 'done' || mergedStatus) {
+    const result = await store.update((b) => core.releaseIssue(b, issueKey, { now, outcome: mergedStatus ? 'merged' : 'closed-in-jira' }));
     for (const l of result.ended) {
       await quietly('history', () => store.saveHistory(l));
       await quietly('event', () => store.logEvent({ type: 'released', outcome: l.outcome, issueKey, agent: l.agent, at: now }));

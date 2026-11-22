@@ -59,6 +59,10 @@ export function PolicyEditor({ projectKey: fixed }) {
             <TextArea id="prot" value={(policy.protectedPaths || []).join('\n')} onChange={(e) => setPolicy({ ...policy, protectedPaths: e.target.value.split('\n') })} />
           </Stack>
           <Stack space="space.050">
+            <Label labelFor="merged">Statuses that mean "merged" before Done (comma-separated, e.g. In QA, Staging)</Label>
+            <Textfield id="merged" value={(policy.mergedStatuses || []).join(', ')} onChange={(e) => setPolicy({ ...policy, mergedStatuses: e.target.value.split(',') })} />
+          </Stack>
+          <Stack space="space.050">
             <Label labelFor="shared">Shared files: claims on these never block each other (one per line)</Label>
             <TextArea id="shared" value={(policy.sharedPaths || []).join('\n')} onChange={(e) => setPolicy({ ...policy, sharedPaths: e.target.value.split('\n') })} />
           </Stack>
