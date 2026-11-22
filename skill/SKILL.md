@@ -38,9 +38,13 @@ outside your lease are blocked locally. Follow the protocol and you will never h
    - `PROTECTED_PATH`: a person must make that change. Tell your person.
    - `NOT_AGENT_READY`: the work item is not handed to agents. Tell your person.
 
-   Clients without hooks (Codex, Cursor): after a granted claim, run
-   `node .lease/hooks/lease-guard.mjs record '<the claim-work result JSON>'` so the
-   pre-commit guard knows your lease.
+   Clients without hooks (Codex, Cursor): after a granted claim, record it so the pre-commit
+   guard knows your lease (stdin avoids quoting problems):
+   ```bash
+   node .lease/hooks/lease-guard.mjs record <<'JSON'
+   <the claim-work result, verbatim>
+   JSON
+   ```
 
 3. **Stay inside your lease.** Only change files under `paths`, and never under
    `mustNotTouch`. If you discover you need another file, call `check-paths`, then

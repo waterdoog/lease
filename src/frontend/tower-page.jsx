@@ -235,7 +235,7 @@ function App() {
     load();
     const t = setInterval(() => {
       if (typeof document === 'undefined' || document.visibilityState !== 'hidden') load();
-    }, 15000);
+    }, 8000);
     return () => clearInterval(t);
   }, [load]);
 
@@ -246,7 +246,7 @@ function App() {
     <Stack space="space.300">
       <Stack space="space.050">
         <Heading size="large">Agent control tower</Heading>
-        <Text>Every AI coding agent working in this site claims its Jira work here first. Live, refreshed every 15 seconds.</Text>
+        <Text>Every AI coding agent working in this site claims its Jira work here first. Live, refreshed every few seconds.</Text>
         <Inline space="space.100" alignBlock="end">
           <Stack space="space.050">
             <Label labelFor="pf">Project</Label>

@@ -277,6 +277,8 @@ test('shared files (package.json, barrel index.ts) never block, but are flagged'
   // a glob over shared names is not a shared claim
   assert.equal(L.isSharedClaim('src/**/index.ts', L.resolvePolicy()), false);
   assert.equal(L.isSharedClaim('apps/web/package.json', L.resolvePolicy()), true);
+  assert.equal(L.isSharedClaim('packages/*/package.json', L.resolvePolicy()), true, 'monorepo form');
+  assert.equal(L.isSharedClaim('packages/*/*.json', L.resolvePolicy()), false);
   const who = L.whoHolds(b.board, { paths: 'package.json', repo: 'acme/web' }, T0);
   assert.equal(who.holders.length, 0);
   assert.equal(who.shared.length, 2);
@@ -295,7 +297,7 @@ test('done work with a PR keeps its changed files reserved until merged', () => 
   const r = L.release(a.board, { leaseId: id, outcome: 'done', prUrl: 'https://github.com/acme/web/pull/88', changedFiles: 'src/auth/login.ts, src/auth/limit.ts' }, ctx({ now: T0 + 10 * MIN }));
   assert.deepEqual(r.decision.lease.heldForReview.paths, ['src/auth/login.ts', 'src/auth/limit.ts']);
   const hold = Object.values(r.board.leases)[0];
-  assert.equal(hold.expiresAt, T0 + 10 * MIN + 72 * 60 * MIN);
+  assert.equal(hold.expiresAt, T0 + 10 * MIN + 24 * 60 * MIN);
   // another agent: the changed file is reserved, the rest of the folder is free
   const b = claimOn(r.board, 'APP-2', 'src/auth/login.ts', { agent: 'codex', accountId: 'mei', repo: 'acme/web', now: T0 + 11 * MIN });
   assert.equal(b.decision.code, 'PATH_COLLISION');

@@ -28,7 +28,9 @@ Still on **Connect & try → Would this claim be granted?**:
 agents working for you go through the real claim code: `sim-claude` claims the rate-limiting item
 for `src/auth/**`; `sim-codex` asks for `src/auth/session.ts` on the refresh-token item and is
 **refused (PATH_COLLISION)**, then takes the invoice item for `src/billing/**`; a migration is
-checked and **refused (PROTECTED_PATH)**. Open the **Live** tab and the work items: the leases,
+checked and **refused (PROTECTED_PATH)**; and you reserve `src/http` by hand for an hour, after
+which an agent asking for `src/http/cache.ts` is **refused with your name** (a person, working
+by hand). Open the **Live** tab and the work items: the leases,
 panels and comments are real (they expire in 30 minutes). On the rate-limiting item, click
 **Take back from agent**: the lease ends and the panel says the agent was told to stop (with a
 real agent, it shows *Stopping…* until the agent's next call; a simulated agent never calls
@@ -77,4 +79,4 @@ or *"What can I safely hand to agents in APP?"*.
 * Everything runs on Forge. No external calls, no API keys, nothing to configure besides
   enabling the MCP tools for external clients.
 * MCP tools act with the connecting person's own Jira permissions.
-* Source and tests: `REPO_URL` (`npm test` runs 67 offline tests).
+* Source and tests: `REPO_URL` (`npm test` runs 69 offline tests).

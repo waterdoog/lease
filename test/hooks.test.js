@@ -90,3 +90,23 @@ test('an expired lease says so', () => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /expired/);
 });
+
+test('people committing by hand are not blocked when the checkout holds no lease', () => {
+  const human = { ...process.env, LEASE_GUARD: '' };
+  for (const k of ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_SANDBOX', 'CODEX_HOME', 'CURSOR_TRACE_ID', 'CURSOR_AGENT', 'LEASE_AGENT']) delete human[k];
+  fs.writeFileSync(path.join(repo, '.lease/active.json'), JSON.stringify({ leases: {} }));
+  fs.writeFileSync(path.join(repo, 'README.md'), 'hello');
+  git('add', 'README.md');
+  assert.equal(spawnSync('git', ['commit', '-qm', 'docs by hand'], { cwd: repo, encoding: 'utf8', env: human }).status, 0);
+  fs.writeFileSync(path.join(repo, 'NOTES.md'), 'x');
+  git('add', 'NOTES.md');
+  const agent = spawnSync('git', ['commit', '-qm', 'agent without lease'], { cwd: repo, encoding: 'utf8', env: { ...human, LEASE_AGENT: '1' } });
+  assert.notEqual(agent.status, 0, 'an agent session without a lease is blocked');
+});
+
+test('record accepts the claim result on stdin (no shell quoting)', () => {
+  const withQuote = { ...claimResponse, lease: { ...claimResponse.lease, leaseId: 'L9', paths: ["docs/it's"] } };
+  const r = spawnSync('node', [guard, 'record'], { cwd: repo, input: JSON.stringify(withQuote), encoding: 'utf8' });
+  assert.match(r.stdout, /active lease/);
+  assert.equal(run('pre', { tool_name: 'Edit', tool_input: { file_path: "docs/it's/a.md" } }).status, 0);
+});

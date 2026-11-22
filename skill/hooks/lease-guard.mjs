@@ -7,7 +7,7 @@
 //              blocks edits to files no active lease covers (exit 2 = blocked).
 //   precommit  git pre-commit hook: refuses commits that touch files outside
 //              the active leases. Works for Codex, Cursor and people.
-//   record     For clients without hooks: `lease-guard record '<claim result JSON>'`.
+//   record     For clients without hooks: pipe the claim-work result JSON on stdin.
 //   status     Print the active leases this checkout knows about.
 //
 // Set LEASE_GUARD=off to bypass (e.g. a person committing by hand).
@@ -156,6 +156,10 @@ if (mode === 'post') {
   process.exit(0);
 } else if (mode === 'precommit') {
   if (off) process.exit(0);
+  // People committing by hand are not blocked unless this checkout holds a lease
+  // or the commit comes from an agent session.
+  const agentSession = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_SANDBOX', 'CODEX_HOME', 'CURSOR_TRACE_ID', 'CURSOR_AGENT', 'LEASE_AGENT'].some((k) => process.env[k]);
+  if (!agentSession && !Object.keys(load().leases).length) process.exit(0);
   const staged = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRD'], { cwd: root, encoding: 'utf8' })
     .split('\n')
     .filter(Boolean);

@@ -26,7 +26,7 @@ export const DEFAULT_POLICY = Object.freeze({
   // After an agent hands off a pull request, keep its files reserved until the
   // work item is Done (merged), so the next agent doesn't rebuild the conflict.
   holdUntilMerged: true,
-  reviewHoldHours: 72,
+  reviewHoldHours: 24,
   // 'block': overlapping claims are refused. 'warn': they are granted with a
   // warning to both sides (a gentler way to start). People, protected paths
   // and work in progress are always enforced.
@@ -113,8 +113,11 @@ export function leaseForIssue(board, issueKey, now) {
 }
 
 // A claim on one concrete shared file (package.json, a barrel index.ts...).
+// (A single-segment wildcard before the file name is fine: "packages/*/package.json".)
 export function isSharedClaim(pattern, policy) {
-  return !/[*?]/.test(pattern) && (policy?.sharedPaths || []).some((sp) => pathMatches(sp, pattern));
+  const segs = pattern.split('/');
+  if (segs.includes('**') || /[*?]/.test(segs[segs.length - 1])) return false;
+  return (policy?.sharedPaths || []).some((sp) => pathMatches(sp, pattern));
 }
 
 // Overlaps with other active leases in the same repository. Pairs where either

@@ -55,7 +55,7 @@ strict is what should: people's work, protected paths, and work in progress.
 | **Enforced in CI** | For cloud agents with no local hooks: `skill/ci/lease-pr-check.mjs` (GitHub Actions and Bitbucket Pipelines snippets included) reads the work item's lease from Jira and fails a pull request that changes files outside it, or whose lease a person revoked. |
 | **Leases expire** | 30 minutes without a heartbeat (configurable) and the work returns to the queue, with a comment and the agent's last progress note. A scheduled trigger sweeps every 5 minutes; every read also ignores expired leases. |
 | **Take it back** | Anyone who can edit the work item can revoke an agent's lease. The panel shows *Stopping…* until the agent hears about it on its next call, then tells the agent who took the work back and why. |
-| **Held until merged** | When an agent hands off a pull request, the files it changed stay reserved until the work item is Done (configurable, 72 h cap), so the next agent doesn't build a conflicting change against `main` while the PR waits for review. Others are pointed at the PR to build on; the same person's agent can re-claim to address review comments. |
+| **Held until merged** | When an agent hands off a pull request, the files it changed stay reserved until the work item is Done (24 h by default, configurable), so the next agent doesn't build a conflicting change against `main` while the PR waits for review. Others are pointed at the PR to build on; the same person's agent can re-claim to address review comments. |
 | **Scope check on hand-off** | `release-work` posts the outcome, summary and PR on the work item, and checks the changed files against the lease: files outside it, or in protected paths, are called out. |
 | **Jira stays the truth** | Moving a work item to Done ends its lease. A person starting leased work is flagged on the work item, once. Leases are mirrored to an issue property (`issue.property[lease].held = true` works in JQL), which keeps the last lease's paths after it ends so CI can check the pull request. |
 | **Morning report** | `agent-report` and the Lease Tower Rovo agent: finished work with PRs, what needs a person (blocked, handed back, expired), collisions prevented. |
@@ -80,9 +80,10 @@ strict is what should: people's work, protected paths, and work in progress.
   pure functions (`src/core/leases.js`), and commits with a conditional transaction on the
   revision; if another agent committed first, it re-reads and decides again. The first write
   uses `FAIL_IF_EXISTS`. One record keeps every grant linearizable across repositories and
-  people; it is capped at 150 active leases per site (about 100 KB, well under the entity
-  limit). Contention is low in practice: 150 agents heart-beating every 10 minutes is about
-  15 writes a minute, and a conflicting write costs one re-read. Sharding per repository is
+  people. A lease takes about 490 bytes, so the 200 KiB budget (under the 240 KiB entity limit)
+  holds about 400 active leases and pull-request holds per site; past that, claims are refused
+  with a clear message. Contention is low in practice: 400 agents heart-beating every 10 minutes
+  is about 40 writes a minute, and a conflicting write costs one re-read. Sharding per repository is
   the next step for very large sites.
 * **Skill, guard and CI check**: [`skill/SKILL.md`](skill/SKILL.md) teaches the protocol;
   [`skill/install.sh`](skill/install.sh) installs the local guard;
@@ -92,7 +93,7 @@ strict is what should: people's work, protected paths, and work in progress.
 
 ```bash
 npm install
-npm test          # 67 tests, offline, about 3 seconds
+npm test          # 69 tests, offline, about 3 seconds
 ```
 
 * `test/paths.test.js`: glob overlap, including a brute-force oracle over 600 random pattern pairs.

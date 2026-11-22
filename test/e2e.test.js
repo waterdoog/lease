@@ -246,7 +246,8 @@ test('simulate two agents runs the real flow on sample work', async () => {
   const sim = await resolve('simulate', { projectKey: 'SIM' }, { accountId: 'yu' });
   assert.equal(sim.ok, true, JSON.stringify(sim));
   const codes = sim.steps.map((s) => (s.granted ? 'granted' : s.result));
-  assert.deepEqual(codes, ['granted', 'granted', 'PATH_COLLISION', 'granted', 'PROTECTED_PATH']);
+  assert.deepEqual(codes, ['granted', 'granted', 'PATH_COLLISION', 'granted', 'granted', 'PATH_COLLISION', 'PROTECTED_PATH']);
+  assert.match(sim.steps[5].says, /a person, working by hand/);
 });
 
 test('app info gives the MCP URL for this installation', async () => {

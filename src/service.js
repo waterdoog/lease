@@ -282,7 +282,13 @@ export async function simulateAgents(projectKey, { accountId }) {
   if (r1.granted) log('sim-claude', 'sends a heartbeat', await heartbeatLease({ leaseId: r1.lease.leaseId, note: 'Limiter middleware drafted (simulated)' }, { accountId }));
   log('sim-codex', `claims ${b.issueKey} for src/auth/session.ts`, await claimWork({ issueKey: b.issueKey, agent: 'sim-codex', repo: SIM_REPO, paths: 'src/auth/session.ts', intent: 'Rotate refresh tokens (simulated agent)' }, { accountId }));
   log('sim-codex', `claims ${c.issueKey} for src/billing/** instead`, await claimWork({ issueKey: c.issueKey, agent: 'sim-codex', repo: SIM_REPO, paths: 'src/billing/**', intent: 'Fix invoice rounding (simulated agent)' }, { accountId }));
-  const d = pick(/rename|column|migration/i) || found.available.find((x) => ![a, b, c].includes(x));
+  const e = pick(/cache|header/i) || found.available.find((x) => ![a, b, c].includes(x));
+  if (e) {
+    const me = await reservePaths({ issueKey: e.issueKey, paths: 'src/http', repo: SIM_REPO, hours: 1 }, { accountId });
+    log('you (by hand)', `reserve src/http for ${e.issueKey} for 1 hour`, me);
+    log('sim-cursor', `would claim ${b.issueKey} for src/http/cache.ts (checked, not taken)`, await dryRunClaim({ issueKey: b.issueKey, agent: 'sim-cursor', repo: SIM_REPO, paths: 'src/http/cache.ts' }, { accountId }));
+  }
+  const d = pick(/rename|column|migration/i) || found.available.find((x) => ![a, b, c, e].includes(x));
   if (d) log('sim-cursor', `would claim ${d.issueKey} for db/migrations/0042.sql (checked, not taken)`, await dryRunClaim({ issueKey: d.issueKey, agent: 'sim-cursor', repo: SIM_REPO, paths: 'db/migrations/0042.sql' }, { accountId }));
   return { ok: true, steps };
 }

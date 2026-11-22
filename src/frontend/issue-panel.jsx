@@ -38,7 +38,7 @@ function useClock(serverNow) {
     if (serverNow) skew.current = serverNow - Date.now();
   }, [serverNow]);
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now() + skew.current), 10000);
+    const t = setInterval(() => setNow(Date.now() + skew.current), 1000);
     return () => clearInterval(t);
   }, []);
   return now;
@@ -194,9 +194,10 @@ function App() {
 
   useEffect(() => {
     load();
+    // Refresh while someone is looking, so an agent's claim or heartbeat shows up within seconds.
     const t = setInterval(() => {
       if (typeof document === 'undefined' || document.visibilityState !== 'hidden') load();
-    }, 30000);
+    }, 8000);
     return () => clearInterval(t);
   }, [load]);
 
