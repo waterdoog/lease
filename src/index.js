@@ -44,7 +44,10 @@ export const releaseWork = wrap((p, who) =>
 
 export const checkPaths = wrap((p) => svc.checkPaths({ paths: p.paths, repo: p.repo }));
 
-export const leaseStatus = wrap((p) => svc.status({ issueKey: issueKeyFrom(p), projectKey: p.projectKey }));
+// Rovo attaches the work item the person is looking at as context; only narrow
+// to it when the question names no project (a project-wide question must not
+// silently become a question about the open work item).
+export const leaseStatus = wrap((p) => svc.status(p.issueKey || p.projectKey ? { issueKey: p.issueKey, projectKey: p.projectKey } : { issueKey: p?.context?.jira?.issueKey }));
 
 export const agentReport = wrap((p) => svc.report({ hours: p.hours, projectKey: p.projectKey || p?.context?.jira?.projectKey }));
 

@@ -69,13 +69,14 @@ export async function canEditIssue(issueKey) {
   return !!d?.permissions?.EDIT_ISSUES?.havePermission;
 }
 
+// Project administrators, and Jira administrators (who can administer every project).
 export async function isProjectAdmin(projectKey) {
   const res = await asUser().requestJira(
-    route`/rest/api/3/mypermissions?projectKey=${projectKey}&permissions=ADMINISTER_PROJECTS`
+    route`/rest/api/3/mypermissions?projectKey=${projectKey}&permissions=ADMINISTER_PROJECTS,ADMINISTER`
   );
   if (!res.ok) return false;
   const d = await res.json();
-  return !!d?.permissions?.ADMINISTER_PROJECTS?.havePermission;
+  return !!(d?.permissions?.ADMINISTER_PROJECTS?.havePermission || d?.permissions?.ADMINISTER?.havePermission);
 }
 
 export async function addLabel(issueKey, label) {

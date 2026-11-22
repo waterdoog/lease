@@ -100,7 +100,7 @@ another.
 
 ```bash
 npm install
-npm test          # 70 tests, offline, about 3 seconds
+npm test          # 72 tests, offline, about 3 seconds
 ```
 
 * `test/paths.test.js`: glob overlap, including a brute-force oracle over 600 random pattern pairs.
@@ -113,6 +113,19 @@ npm test          # 70 tests, offline, about 3 seconds
   blocked and allowed edits, `mustNotTouch`, pre-commit refusal, bypass, expiry.
 * `test/ci.test.js`: the pull request check: inside, outside, protected, revoked, missing lease,
   other repository, step summary.
+
+### Verified on a live site (production app, 22 Nov 2026)
+
+* Real Forge storage: 8 claims racing for overlapping paths in one invocation → exactly 1
+  granted, the others rejected by the revision condition and retried; 8 racing on disjoint
+  paths → all 8 stored, no lost update; a 420-lease record (193 KB) written and read back.
+* UI Kit panel, control tower and simulator render and work in Jira; take-back works end to end.
+* Rovo actions receive the person in `context.principal`; the Lease Tower agent answers from
+  live leases.
+* Two bugs found only on the live site and fixed: Jira administrators were not treated as
+  project administrators on a brand-new project; a project-wide Rovo question was narrowed to
+  the work item open on screen.
+* `forge eligibility`: the production version is eligible for **Runs on Atlassian**.
 
 Mutation check: removing the revision condition, the collision check, the human-in-progress
 rule, expiry, glob matching or the owner check each turns tests red.

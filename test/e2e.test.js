@@ -314,3 +314,20 @@ test('a configured "merged" status ends a pull request hold before Done', async 
   await app.onIssueUpdated({ issue: { key: 'APP-140' } });
   assert.equal((await app.leaseStatus({ issueKey: 'APP-140' }, as('yu'))).activeLeases.length, 0);
 });
+
+test('Jira administrators count as project administrators (live finding: new projects have no project admins yet)', async () => {
+  jira.jiraAdmins = new Set(['sam']);
+  jira.currentUser = 'sam';
+  for (const k of Object.keys(jira.issues)) if (k.startsWith('NEW-')) delete jira.issues[k];
+  const made = await app.resolverHandler('createSampleWork', { projectKey: 'NEW' }, { accountId: 'sam' });
+  assert.equal(made.ok, true, JSON.stringify(made));
+  jira.jiraAdmins = new Set();
+});
+
+test('Rovo context: a project question is not narrowed to the open work item', async () => {
+  const st = await app.leaseStatus({ projectKey: 'APP', context: { jira: { issueKey: 'APP-101' } } }, as('yu'));
+  assert.ok(st.count >= 1 || st.activeLeases.length >= 1);
+  assert.ok(st.activeLeases.some((l) => l.issueKey !== 'APP-101'));
+  const one = await app.leaseStatus({ context: { jira: { issueKey: 'APP-107' } } }, as('yu'));
+  assert.ok(one.activeLeases.every((l) => l.issueKey === 'APP-107'));
+});

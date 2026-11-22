@@ -134,7 +134,7 @@ function LeaseCard({ lease, now, mine, onRevoke, onRelease }) {
             ))}
           </Stack>
         ) : null}
-        <Inline space="space.100">
+        <Inline space="space.100" shouldWrap>
           {mine ? (
             <Button onClick={onRelease}>{person ? 'Release my reservation' : 'End my agent’s lease'}</Button>
           ) : null}

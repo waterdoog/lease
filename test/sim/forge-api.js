@@ -78,7 +78,7 @@ function handle(who, path, opts = {}) {
   }
   if (path.startsWith('/rest/api/3/mypermissions')) {
     const me = jiraState.currentUser;
-    return res(200, { permissions: { EDIT_ISSUES: { havePermission: true }, ADMINISTER_PROJECTS: { havePermission: jiraState.admins.has(me) } } });
+    return res(200, { permissions: { EDIT_ISSUES: { havePermission: true }, ADMINISTER_PROJECTS: { havePermission: jiraState.admins.has(me) }, ADMINISTER: { havePermission: (jiraState.jiraAdmins || new Set()).has(me) } } });
   }
   return res(404, { path });
 }

@@ -72,7 +72,7 @@ export const emptyBoard = () => ({ rev: 0, leases: {} });
 
 const MIN = 60 * 1000;
 const clone = (b) => ({ rev: b.rev, leases: { ...b.leases } });
-const fmtTime = (ms) => new Date(ms).toISOString().replace('.000Z', 'Z');
+const fmtTime = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 export function normalizeAgent(agent) {
   const a = String(agent ?? '').trim().toLowerCase().replace(/[^a-z0-9._@/-]+/g, '-').replace(/^-+|-+$/g, '');
