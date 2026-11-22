@@ -75,7 +75,7 @@ another.
 * **Forge, nothing else.** No external services, no API keys, no egress.
 * **`rovo:mcp`** exposes 7 actions as MCP tools (`find-work`, `claim-work`, `heartbeat`,
   `release-work`, `check-paths`, `lease-status`, `agent-report`) at
-  `https://mcp.atlassian.com/forge/<app id>`. Any MCP client connects with OAuth and acts
+  `https://mcp.atlassian.com/forge/253f3343-f9f7-49af-adf0-e4b3358cc935`. Any MCP client connects with OAuth and acts
   with **its person's own Jira permissions** (reads run `asUser`; the account ID comes from
   the invocation context, never from model-supplied input).
 * **`rovo:agent`** "Lease Tower" for the people supervising agents (read-only actions).
@@ -130,7 +130,7 @@ Connect an agent (after a site admin enables the Lease tools under Atlassian Adm
 Apps → Sites → *site* → Connected apps), then install the guard in your repository:
 
 ```bash
-claude mcp add --transport http lease https://mcp.atlassian.com/forge/<app id>
+claude mcp add --transport http lease https://mcp.atlassian.com/forge/253f3343-f9f7-49af-adf0-e4b3358cc935
 sh /path/to/lease/skill/install.sh
 ```
 

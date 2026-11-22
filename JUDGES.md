@@ -46,7 +46,7 @@ refused with your name (try it in *Would this claim be granted?*).
    turn on the Lease tools for external MCP clients.
 2. In a terminal with Claude Code (any MCP client works):
    ```bash
-   claude mcp add --transport http lease https://mcp.atlassian.com/forge/APP_UUID
+   claude mcp add --transport http lease https://mcp.atlassian.com/forge/253f3343-f9f7-49af-adf0-e4b3358cc935
    ```
    Approve the OAuth screen and pick your site.
 3. Ask the agent:
@@ -79,4 +79,4 @@ or *"What can I safely hand to agents in APP?"*.
 * Everything runs on Forge. No external calls, no API keys, nothing to configure besides
   enabling the MCP tools for external clients.
 * MCP tools act with the connecting person's own Jira permissions.
-* Source and tests: `REPO_URL` (`npm test` runs 70 offline tests).
+* Source and tests: https://github.com/waterdoog/lease (`npm test` runs 70 offline tests).
