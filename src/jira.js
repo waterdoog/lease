@@ -21,6 +21,9 @@ const asApp = () => api.asApp();
 export function toIssueFacts(raw) {
   if (!raw) return null;
   const f = raw.fields || {};
+  const blockedBy = (f.issuelinks || [])
+    .filter((l) => l.inwardIssue?.key && String(l.type?.inward || '').toLowerCase() === 'is blocked by')
+    .map((l) => ({ key: l.inwardIssue.key, done: l.inwardIssue.fields?.status?.statusCategory?.key === 'done' }));
   return {
     key: raw.key,
     id: raw.id,
@@ -31,10 +34,11 @@ export function toIssueFacts(raw) {
     statusCategory: f.status?.statusCategory?.key || 'new',
     assigneeAccountId: f.assignee?.accountId || null,
     assigneeName: f.assignee?.displayName || null,
+    blockedBy,
   };
 }
 
-const FIELDS = 'summary,labels,status,assignee,project';
+const FIELDS = 'summary,labels,status,assignee,project,issuelinks';
 
 export async function getIssue(issueKey, { as = 'user' } = {}) {
   const who = as === 'app' ? asApp() : asUser();

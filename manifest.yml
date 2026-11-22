@@ -112,6 +112,12 @@ modules:
           required: false
           description: How long the lease lasts without a heartbeat (default 30, capped by
             the project policy).
+        force:
+          title: Force claim
+          type: boolean
+          required: false
+          description: Claim even if the work item has unresolved "is blocked by" links
+            (default false).
     - key: heartbeat
       name: Lease heartbeat
       function: heartbeat-fn

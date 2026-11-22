@@ -388,3 +388,81 @@ test('the Lease gate validator reads the live issue property', async () => {
   assert.equal((await app.leaseGate({ issue: { key: 'APP-160' } })).result, true);
   assert.equal((await app.leaseGate({})).result, true);
 });
+
+test('an allowedAgents policy refuses non-listed agents and grants listed ones', async () => {
+  const resolve = app.resolverHandler;
+  issue('APP-170', 'Tighten CORS headers');
+  jira.currentUser = 'yu';
+  const saved = await resolve('savePolicy', { projectKey: 'APP', policy: { allowedAgents: 'claude-code, codex' } }, { accountId: 'yu' });
+  assert.equal(saved.ok, true);
+  assert.deepEqual(saved.policy.allowedAgents, ['claude-code', 'codex']);
+
+  const refused = await app.claimWork({ issueKey: 'APP-170', agent: 'cursor', paths: 'src/cors', repo: 'acme/web' }, as('mei'));
+  assert.equal(refused.granted, false);
+  assert.equal(refused.result, 'AGENT_NOT_ALLOWED');
+  assert.match(refused.reasons[0], /claude-code.*codex/);
+
+  const granted = await app.claimWork({ issueKey: 'APP-170', agent: 'Codex', paths: 'src/cors', repo: 'acme/web' }, as('mei'));
+  assert.equal(granted.granted, true);
+  await app.releaseWork({ leaseId: granted.lease.leaseId, outcome: 'abandoned' }, as('mei'));
+
+  jira.currentUser = 'yu';
+  const reset = await resolve('savePolicy', { projectKey: 'APP', policy: { allowedAgents: [] } }, { accountId: 'yu' });
+  assert.equal(reset.ok, true);
+  assert.deepEqual(reset.policy.allowedAgents, []);
+});
+
+test('a person sends a message to a working agent; delivered once on the next heartbeat', async () => {
+  const resolve = app.resolverHandler;
+  issue('APP-180', 'Normalise webhook headers');
+  const c = await app.claimWork({ issueKey: 'APP-180', agent: 'claude-code', paths: 'src/webhooks/headers.ts', repo: 'acme/web' }, as('yu'));
+  assert.equal(c.granted, true);
+
+  jira.currentUser = 'sam';
+  const sent = await resolve('messageAgent', { leaseId: c.lease.leaseId, text: 'Keep X-Signature case-insensitive please.' }, { accountId: 'sam', extension: { issue: { key: 'APP-180' } } });
+  assert.equal(sent.granted, true, JSON.stringify(sent));
+  assert.equal(sent.lease.inbox.length, 1);
+  assert.equal(sent.lease.inbox[0].deliveredAt, null);
+
+  let panel = await resolve('issueView', {}, { accountId: 'sam', extension: { issue: { key: 'APP-180' } } });
+  assert.equal(panel.lease.inbox[0].deliveredAt, null);
+  assert.ok(panel.events.some((e) => e.type === 'messaged'));
+
+  const hb1 = await app.heartbeat({ leaseId: c.lease.leaseId, note: 'working on headers' }, as('yu'));
+  assert.equal(hb1.granted, true);
+  assert.equal(hb1.messages.length, 1);
+  assert.equal(hb1.messages[0].from, 'Sam Ortiz');
+  assert.equal(hb1.messages[0].text, 'Keep X-Signature case-insensitive please.');
+  assert.ok(hb1.lease.inbox[0].deliveredAt);
+
+  const hb2 = await app.heartbeat({ leaseId: c.lease.leaseId }, as('yu'));
+  assert.equal(hb2.granted, true);
+  assert.deepEqual(hb2.messages, []);
+});
+
+test('blocked work is skipped in find-work and refused on claim unless forced or unblocked', async () => {
+  issue('APP-190', 'Create audit events table');
+  issue('APP-191', 'Stream audit events to S3', ['agent-ok'], { blockedBy: ['APP-190'] });
+
+  const found = await app.findWork({ projectKey: 'APP', limit: 25 }, as('yu'));
+  assert.ok(!found.available.some((a) => a.issueKey === 'APP-191'), 'blocked work is excluded from available');
+  const unavail = found.unavailable.find((u) => u.issueKey === 'APP-191');
+  assert.ok(unavail);
+  assert.equal(unavail.heldBy, 'blocked by APP-190');
+
+  const denied = await app.claimWork({ issueKey: 'APP-191', agent: 'claude-code', paths: 'src/audit/stream.ts', repo: 'acme/web' }, as('yu'));
+  assert.equal(denied.granted, false);
+  assert.equal(denied.result, 'BLOCKED_BY');
+  assert.match(denied.reasons[0], /APP-190/);
+
+  const forced = await app.claimWork({ issueKey: 'APP-191', agent: 'claude-code', paths: 'src/audit/stream.ts', repo: 'acme/web', force: true }, as('yu'));
+  assert.equal(forced.granted, true);
+  await app.releaseWork({ leaseId: forced.lease.leaseId, outcome: 'abandoned' }, as('yu'));
+
+  Object.assign(jira.issues['APP-190'], { status: 'Done', cat: 'done' });
+  const foundAfter = await app.findWork({ projectKey: 'APP', limit: 25 }, as('yu'));
+  assert.ok(foundAfter.available.some((a) => a.issueKey === 'APP-191'));
+  const granted = await app.claimWork({ issueKey: 'APP-191', agent: 'claude-code', paths: 'src/audit/stream.ts', repo: 'acme/web' }, as('yu'));
+  assert.equal(granted.granted, true);
+  await app.releaseWork({ leaseId: granted.lease.leaseId, outcome: 'abandoned' }, as('yu'));
+});

@@ -40,6 +40,8 @@ export const DEFAULT_POLICY = Object.freeze({
   // A handed-off pull request's files: 'warn' tells the next agent (and grants),
   // 'block' refuses overlapping claims until the work item is Done.
   reviewHoldMode: 'warn',
+  // Agents allowed to claim work in this project (empty means any agent).
+  allowedAgents: [],
 });
 
 // One record holds every active lease on the site (that is what makes grants
@@ -72,6 +74,13 @@ export function resolvePolicy(stored) {
     .map((x) => String(x).trim())
     .filter(Boolean)
     .slice(0, 20);
+  p.allowedAgents = [
+    ...new Set(
+      (Array.isArray(p.allowedAgents) ? p.allowedAgents : String(p.allowedAgents || '').split(','))
+        .map((x) => normalizeAgent(x))
+        .filter((x) => x && x !== PERSON)
+    ),
+  ].slice(0, 50);
   return p;
 }
 
@@ -196,9 +205,14 @@ function deny(code, reasons, extra = {}) {
   return { granted: false, code, reasons, ...extra };
 }
 
+// Keys of unresolved inward "is blocked by" issue links.
+export function openBlockers(issue) {
+  return (issue?.blockedBy || []).filter((b) => b && b.key && !b.done).map((b) => b.key);
+}
+
 // Decide a claim. `issue` is what Jira says right now about the work item:
 // { key, projectKey, summary, labels[], statusCategory: 'new'|'indeterminate'|'done',
-//   statusName, assigneeAccountId, assigneeName }
+//   statusName, assigneeAccountId, assigneeName, blockedBy?: [{ key, done }] }
 export function claim(board0, req, ctx) {
   const { now, accountId, ownerName = null, issue, policy: rawPolicy, newId } = ctx;
   const policy = resolvePolicy(rawPolicy);
@@ -210,6 +224,12 @@ export function claim(board0, req, ctx) {
 
   if (!agent || agent === PERSON) return done(deny('BAD_REQUEST', ['Name the agent making the claim, for example "claude-code" or "codex".']));
   if (!accountId) return done(deny('BAD_REQUEST', ['No signed-in Atlassian user: an agent must act on behalf of a person.']));
+  if (policy.allowedAgents.length && !policy.allowedAgents.some((a) => a.toLowerCase() === String(agent).toLowerCase()))
+    return done(
+      deny('AGENT_NOT_ALLOWED', [
+        `${agent} is not allowed to claim work in this project. Allowed agents: ${policy.allowedAgents.join(', ')}.`,
+      ])
+    );
   if (errors.length) return done(deny('BAD_PATHS', errors));
   if (!patterns.length)
     return done(deny('BAD_PATHS', ['Declare the files or folders you will change, for example "src/auth/**".']));
@@ -226,6 +246,13 @@ export function claim(board0, req, ctx) {
     return done(
       deny('NOT_AGENT_READY', [
         `${issue.key} is not marked safe for agents. A person can add the "${policy.agentLabel}" label to hand it over.`,
+      ])
+    );
+  const blockers = openBlockers(issue);
+  if (blockers.length && req.force !== true)
+    return done(
+      deny('BLOCKED_BY', [
+        `${issue.key} is blocked by ${blockers.join(', ')}. Finish ${blockers.length === 1 ? 'that work item' : 'those work items'} first, or pick unblocked work.`,
       ])
     );
   if (
@@ -323,6 +350,7 @@ export function claim(board0, req, ctx) {
     heartbeatAt: now,
     expiresAt: now + ttlMs(req.ttlMinutes, policy),
     notes: [],
+    inbox: [],
   };
   const next = clone(board);
   next.leases[lease.id] = lease;
@@ -440,10 +468,36 @@ export function heartbeat(board0, req, ctx) {
       : ttlMs(req.extendMinutes, policy);
   const notes = req.note ? [...lease.notes, { at: now, text: String(req.note).slice(0, 500) }].slice(-20) : lease.notes;
   const alerts = lease.alerts || [];
-  const updated = { ...lease, paths, excluded: excludedFor(paths, policy), notes, alerts: [], heartbeatAt: now, expiresAt: Math.max(lease.expiresAt, now + extendMs) };
+  const inbox0 = lease.inbox || [];
+  const undelivered = inbox0.filter((m) => !m.deliveredAt);
+  const inbox = undelivered.length ? inbox0.map((m) => (m.deliveredAt ? m : { ...m, deliveredAt: now })) : inbox0;
+  const messages = undelivered.map((m) => ({ at: fmtTime(m.at), from: m.from, text: m.text }));
+  const updated = { ...lease, paths, excluded: excludedFor(paths, policy), notes, inbox, alerts: [], heartbeatAt: now, expiresAt: Math.max(lease.expiresAt, now + extendMs) };
   const next = clone(board);
   next.leases[lease.id] = updated;
-  return done({ granted: true, code: 'RENEWED', lease: updated, reasons: alerts }, next);
+  return done({ granted: true, code: 'RENEWED', lease: updated, reasons: alerts, messages }, next);
+}
+
+// A person sends a message to a working agent without taking the lease back.
+// Permission is checked by the caller (same rule as revoke).
+export function messageAgent(board0, req, ctx) {
+  const { now, actorName } = ctx;
+  const { board, expired } = sweep(board0, now);
+  const l = board.leases[req.leaseId];
+  if (!l || l.expiresAt <= now) return { board, expired, decision: deny('LEASE_GONE', ['That lease is no longer active.']) };
+  if (l.kind) return { board, expired, decision: deny('BAD_REQUEST', ['Only an active agent lease can receive messages.']) };
+  const text = String(req.text ?? '').trim().slice(0, 500);
+  if (!text) return { board, expired, decision: deny('BAD_REQUEST', ['Write a message for the agent.']) };
+  const msg = { at: now, from: actorName || 'A person', text };
+  // Keep every undelivered message; drop the oldest delivered ones first. Refuse once 10 are waiting.
+  const waiting = (l.inbox || []).filter((m) => !m.deliveredAt);
+  if (waiting.length >= 10) return { board, expired, decision: deny('INBOX_FULL', ['The agent has 10 unread messages. Wait for its next heartbeat, or take the work back.']) };
+  const delivered = (l.inbox || []).filter((m) => m.deliveredAt);
+  const inbox = [...delivered.slice(-(9 - waiting.length)), ...waiting, msg];
+  const updated = { ...l, inbox };
+  const next = clone(board);
+  next.leases[l.id] = updated;
+  return { board: next, expired, decision: { granted: true, code: 'MESSAGED', lease: updated, message: msg } };
 }
 
 export const OUTCOMES = ['done', 'handed-back', 'blocked', 'abandoned'];
@@ -474,6 +528,7 @@ export function release(board0, req, ctx) {
       ...lease,
       intent: '',
       notes: [],
+      inbox: [],
       excluded: [],
       kind: REVIEW,
       paths: changed.length ? changed.slice(0, 200) : lease.paths,
@@ -570,6 +625,12 @@ export function publicLease(l) {
     lastHeartbeat: fmtTime(l.heartbeatAt),
     expiresAt: fmtTime(l.expiresAt),
     notes: (l.notes || []).slice(-5).map((n) => ({ at: fmtTime(n.at), text: n.text })),
+    inbox: (l.inbox || []).map((m) => ({
+      at: fmtTime(m.at),
+      from: m.from,
+      text: m.text,
+      deliveredAt: m.deliveredAt ? fmtTime(m.deliveredAt) : null,
+    })),
   };
 }
 

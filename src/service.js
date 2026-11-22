@@ -291,6 +291,25 @@ export async function revokeLease(input, { accountId }) {
   return present(d);
 }
 
+export async function messageAgentLease(input, { accountId }) {
+  if (!input?.leaseId) return NEEDS_LEASE_ID('messageAgent');
+  const now = Date.now();
+  const box = shard(await repoOfLease(input.leaseId));
+  const board = await box.readBoard();
+  const l = board.leases[input.leaseId];
+  if (!l || l.expiresAt <= now) return { granted: false, code: 'LEASE_GONE', reasons: ['That lease is no longer active.'] };
+  const allowed = l.ownerAccountId === accountId || (await jira.canEditIssue(l.issueKey));
+  if (!allowed) return { granted: false, code: 'FORBIDDEN', reasons: ['Only the agent’s person or someone who can edit the work item can message the agent.'] };
+  const me = await jira.myself().catch(() => ({ displayName: null }));
+  const result = await box.update((b) => core.messageAgent(b, input, { now, accountId, actorName: me.displayName }));
+  await afterExpired(result.expired, now);
+  const d = result.decision;
+  if (d.granted) {
+    await quietly('event', () => store.logEvent({ type: 'messaged', issueKey: d.lease.issueKey, agent: d.lease.agent, by: me.displayName, at: now }));
+  }
+  return present(d);
+}
+
 export async function reservePaths(input, { accountId }) {
   const now = Date.now();
   const issueKey = jira.cleanKey(input.issueKey);
@@ -380,9 +399,12 @@ export async function findWork({ projectKey, limit = 10 }) {
   const taken = [];
   for (const i of issues) {
     const held = core.leaseForIssue(board, i.key, now);
+    const blockers = core.openBlockers(i);
     if (held) taken.push({ issueKey: i.key, summary: i.summary, heldBy: held.agent, until: core.fmtTime(held.expiresAt) });
     else if (policy.respectHumanInProgress && i.statusCategory === 'indeterminate' && i.assigneeAccountId)
       taken.push({ issueKey: i.key, summary: i.summary, heldBy: i.assigneeName, until: 'a person is working on it' });
+    else if (blockers.length)
+      taken.push({ issueKey: i.key, summary: i.summary, heldBy: `blocked by ${blockers.join(', ')}`, until: 'blocker is done' });
     else free.push({ issueKey: i.key, summary: i.summary, status: i.statusName });
   }
   const busyPaths = core.activeLeases(board, now).map((l) => ({ issueKey: l.issueKey, agent: l.agent, repo: l.repo, paths: l.paths }));
@@ -562,7 +584,7 @@ export async function visibleOnly(output) {
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === 'object') {
       if (typeof v.issueKey === 'string' && hidden.has(v.issueKey)) {
-        const { summary, intent, notes, prUrl, pr, whatItDid, lastNote, why, ...rest } = v;
+        const { summary, intent, notes, inbox, prUrl, pr, whatItDid, lastNote, why, ...rest } = v;
         return walk({ ...rest, issueKey: '(hidden)', hidden: true });
       }
       return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
@@ -576,6 +598,7 @@ export async function visibleOnly(output) {
 export function present(d) {
   if (d.granted) {
     const out = { granted: true, result: d.code, lease: core.publicLease(d.lease), reasons: d.reasons || [] };
+    if (d.code === 'RENEWED') out.messages = d.messages || [];
     if (d.code === 'GRANTED' || d.code === 'ALREADY_HELD')
       out.next = `Work only inside the leased paths. Call heartbeat with leaseId ${d.lease.id} at least every 10 minutes, and release it with the pull request link when done.`;
     if (d.code === 'RELEASED' || d.code === 'REVOKED') out.lease = { ...core.publicLease(d.lease), outcome: d.lease.outcome, prUrl: d.lease.prUrl || null };

@@ -9,6 +9,16 @@ const res = (status, body) => ({ ok: status < 300, status, json: async () => bod
 
 function raw(issue) {
   const u = issue.assignee ? jiraState.users[issue.assignee] : null;
+  const issuelinks = [
+    ...(issue.issuelinks || []),
+    ...(issue.blockedBy || []).map((k) => {
+      const b = jiraState.issues[k];
+      return {
+        type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' },
+        inwardIssue: { key: k, fields: { status: { name: b?.status || 'To Do', statusCategory: { key: b?.cat || 'new' } } } },
+      };
+    }),
+  ];
   return {
     key: issue.key,
     id: issue.key,
@@ -18,6 +28,7 @@ function raw(issue) {
       status: { name: issue.status, statusCategory: { key: issue.cat } },
       assignee: u ? { accountId: issue.assignee, displayName: u } : null,
       project: { key: issue.key.split('-')[0] },
+      issuelinks,
     },
   };
 }

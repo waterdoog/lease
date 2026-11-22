@@ -29,7 +29,7 @@ export const findWork = wrap((p) => svc.findWork({ projectKey: p.projectKey || p
 
 export const claimWork = wrap((p, who) =>
   svc.claimWork(
-    { issueKey: issueKeyFrom(p), agent: p.agent, paths: p.paths, intent: p.intent, ttlMinutes: p.ttlMinutes, repo: p.repo },
+    { issueKey: issueKeyFrom(p), agent: p.agent, paths: p.paths, intent: p.intent, ttlMinutes: p.ttlMinutes, repo: p.repo, force: p.force },
     who
   )
 );
@@ -70,6 +70,10 @@ resolver.define('issueView', async ({ context }) => {
 
 resolver.define('revoke', async ({ payload, context }) => svc.revokeLease({ leaseId: payload.leaseId, reason: payload.reason }, { accountId: context.accountId }));
 
+resolver.define('messageAgent', async ({ payload, context }) =>
+  svc.messageAgentLease({ leaseId: payload.leaseId, text: payload.text }, { accountId: context.accountId })
+);
+
 resolver.define('setAgentReady', async ({ payload, context }) => {
   const issueKey = payload.issueKey || context.extension?.issue?.key;
   return svc.markAgentReady(issueKey, !!payload.ready);
@@ -81,7 +85,7 @@ resolver.define('tower', async ({ payload }) => {
 });
 
 resolver.define('dryRun', async ({ payload, context }) =>
-  svc.visibleOnly(await svc.dryRunClaim({ issueKey: payload.issueKey, agent: payload.agent, paths: payload.paths, repo: payload.repo }, { accountId: context.accountId }))
+  svc.visibleOnly(await svc.dryRunClaim({ issueKey: payload.issueKey, agent: payload.agent, paths: payload.paths, repo: payload.repo, force: payload.force }, { accountId: context.accountId }))
 );
 resolver.define('createSampleWork', async ({ payload }) => svc.createSampleWork(payload.projectKey));
 

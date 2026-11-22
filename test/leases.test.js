@@ -366,3 +366,17 @@ test('Lease gate: blocks closing while an agent works, and after an out-of-lease
   assert.equal(L.gate(strayed, ['lease-reviewed'], T0).result, true);
   assert.equal(L.gate({ ...strayed, scopeCheck: { clean: true, outside: [], protectedTouched: [] } }, [], T0).result, true);
 });
+
+test('messages to an agent: unread ones are never dropped; the 11th unread is refused', () => {
+  let { board, decision } = claimOn(L.emptyBoard(), 'APP-1', 'src/auth/**');
+  const id = decision.lease.id || decision.lease.leaseId;
+  const now = decision.lease.expiresAt - 60000;
+  for (let i = 0; i < 10; i++) {
+    const r = L.messageAgent(board, { leaseId: id, text: `m${i}` }, { now, actorName: 'Sam' });
+    assert.equal(r.decision.granted, true, JSON.stringify(r.decision));
+    board = r.board;
+  }
+  const full = L.messageAgent(board, { leaseId: id, text: 'one more' }, { now, actorName: 'Sam' });
+  assert.equal(full.decision.code, 'INBOX_FULL');
+  assert.deepEqual(board.leases[id].inbox.map((m) => m.text), ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9']);
+});

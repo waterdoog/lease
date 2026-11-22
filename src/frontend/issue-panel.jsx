@@ -70,7 +70,8 @@ function Paths({ lease }) {
   );
 }
 
-function LeaseCard({ lease, now, mine, onRevoke, onRelease }) {
+function LeaseCard({ lease, now, mine, busy, onRevoke, onRelease, onMessage }) {
+  const [msgText, setMsgText] = useState('');
   const exp = Date.parse(lease.expiresAt);
   const total = Math.max(1, exp - Date.parse(lease.lastHeartbeat));
   const left = Math.max(0, exp - now);
@@ -138,6 +139,44 @@ function LeaseCard({ lease, now, mine, onRevoke, onRelease }) {
                 <Text as="span" color="color.text.subtle">{ago(Date.parse(n.at), now)}</Text> {n.text}
               </Text>
             ))}
+          </Stack>
+        ) : null}
+        {!person ? (
+          <Stack space="space.075">
+            <Label labelFor="msg-agent">Message agent</Label>
+            <Inline space="space.100" alignBlock="center" shouldWrap>
+              <Textfield
+                id="msg-agent"
+                value={msgText}
+                onChange={(e) => setMsgText(e.target.value)}
+                placeholder="Send guidance without taking the work back"
+              />
+              <Button
+                isDisabled={busy || !msgText.trim()}
+                onClick={async () => {
+                  const text = msgText.trim();
+                  if (!text) return;
+                  const ok = await onMessage(text);
+                  if (ok !== false) setMsgText('');
+                }}
+              >
+                Send
+              </Button>
+            </Inline>
+            {lease.inbox?.length ? (
+              <Stack space="space.050">
+                {[...lease.inbox].reverse().map((m, i) => (
+                  <Inline key={i} space="space.075" alignBlock="center" shouldWrap>
+                    <Lozenge appearance={m.deliveredAt ? 'success' : 'default'}>
+                      {m.deliveredAt ? 'delivered' : 'waiting for next heartbeat'}
+                    </Lozenge>
+                    <Text size="small">
+                      <Strong>{m.from}:</Strong> {m.text}
+                    </Text>
+                  </Inline>
+                ))}
+              </Stack>
+            ) : null}
           </Stack>
         ) : null}
         <Inline space="space.100" shouldWrap>
@@ -269,8 +308,15 @@ function App() {
           lease={lease}
           now={now}
           mine={mine}
+          busy={busy}
           onRevoke={() => setRevokeOpen(true)}
           onRelease={() => act(() => invoke('releaseMine', { leaseId: lease.leaseId }).then((r) => (r.granted ? { ok: true, text: 'Released.' } : r)))}
+          onMessage={(text) =>
+            act(async () => {
+              const r = await invoke('messageAgent', { leaseId: lease.leaseId, text });
+              return r.granted ? { ok: true, text: `Queued for ${lease.agent} on its next heartbeat.` } : r;
+            })
+          }
         />
       ) : (
         <Stack space="space.150">

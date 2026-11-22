@@ -63,6 +63,10 @@ export function PolicyEditor({ projectKey: fixed }) {
             <Textfield id="merged" value={(policy.mergedStatuses || []).join(', ')} onChange={(e) => setPolicy({ ...policy, mergedStatuses: e.target.value.split(',') })} />
           </Stack>
           <Stack space="space.050">
+            <Label labelFor="agents">Allowed agents (comma-separated, e.g. claude-code, codex; leave empty to allow any agent)</Label>
+            <Textfield id="agents" value={(policy.allowedAgents || []).join(', ')} onChange={(e) => setPolicy({ ...policy, allowedAgents: e.target.value.split(',') })} placeholder="claude-code, codex" />
+          </Stack>
+          <Stack space="space.050">
             <Label labelFor="shared">Shared files: claims on these never block each other (one per line)</Label>
             <TextArea id="shared" value={(policy.sharedPaths || []).join('\n')} onChange={(e) => setPolicy({ ...policy, sharedPaths: e.target.value.split('\n') })} />
           </Stack>
