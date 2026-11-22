@@ -8,6 +8,9 @@
 
 import { parsePathList, overlaps, isWholeRepo, claimEntersProtected, pathMatches } from './paths.js';
 
+/** "1 file", "3 files". */
+export const count = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 export const DEFAULT_POLICY = Object.freeze({
   agentLabel: 'agent-ok',
   requireLabel: true,
@@ -156,7 +159,7 @@ function alertSharers(next, hits, lease) {
     if (!other) continue;
     const msg = h.warnOnly
       ? `${describeHolder(lease)} now also works on ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} for ${lease.issueKey}, overlapping your lease. Coordinate before changing the same lines.`
-      : `${describeHolder(lease)} also changes shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} for ${lease.issueKey}: keep your changes to them additive.`;
+      : `${describeHolder(lease)} also changes shared ${h.pairs.length === 1 ? 'file' : 'files'} ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} for ${lease.issueKey}: keep your changes to ${h.pairs.length === 1 ? 'it' : 'them'} additive.`;
     next.leases[other.id] = { ...other, alerts: [...(other.alerts || []), msg].slice(-5) };
   }
 }
@@ -167,7 +170,7 @@ function sharedNotes(hits) {
       ? `Heads-up: ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} overlaps files in a pull request awaiting review for ${h.lease.issueKey}${h.lease.prUrl ? ` (${h.lease.prUrl})` : ''}. Build on that branch, or expect to resolve a merge conflict.`
       : h.warnOnly
       ? `Warning: ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} overlaps ${h.lease.issueKey} (${describeHolder(h.lease)}). This project warns instead of refusing; coordinate before changing the same lines.`
-      : `Shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} also in ${h.lease.issueKey} (${describeHolder(h.lease)}): keep your changes additive so git can merge them.`
+      : `Shared ${h.pairs.length === 1 ? 'file' : 'files'} ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} also in ${h.lease.issueKey} (${describeHolder(h.lease)}): keep your changes additive so git can merge them.`
   );
 }
 
@@ -262,7 +265,7 @@ export function claim(board0, req, ctx) {
   if (mine.length >= policy.maxActivePerAgent)
     return done(
       deny('AGENT_BUSY', [
-        `${agent} already holds ${mine.length} lease(s) (${mine.map((l) => l.issueKey).join(', ')}); the limit is ${policy.maxActivePerAgent}. Release one first.`,
+        `${agent} already holds ${count(mine.length, 'lease')} (${mine.map((l) => l.issueKey).join(', ')}); the limit is ${policy.maxActivePerAgent}. Release one first.`,
       ])
     );
 
@@ -586,8 +589,8 @@ export function gate(prop, labels = [], now = Date.now()) {
   const sc = prop.scopeCheck;
   if (sc && sc.clean === false && !reviewed) {
     const what = [
-      sc.outside?.length ? `${sc.outside.length} file(s) outside its lease (${sc.outside.slice(0, 3).join(', ')}${sc.outside.length > 3 ? ', ...' : ''})` : '',
-      sc.protectedTouched?.length ? `protected path(s) ${sc.protectedTouched.slice(0, 3).join(', ')}` : '',
+      sc.outside?.length ? `${count(sc.outside.length, 'file')} outside its lease (${sc.outside.slice(0, 3).join(', ')}${sc.outside.length > 3 ? ', ...' : ''})` : '',
+      sc.protectedTouched?.length ? `protected ${sc.protectedTouched.length === 1 ? 'path' : 'paths'} ${sc.protectedTouched.slice(0, 3).join(', ')}` : '',
     ].filter(Boolean).join(' and ');
     return {
       result: false,

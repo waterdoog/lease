@@ -133,6 +133,14 @@ test('a full happy path ends with a PR on the work item and in the report', asyn
   assert.equal(rep.totals.humanWorkProtected, 1);
   assert.equal(rep.finishedWork.find((f) => f.outcome === 'done').pr, 'https://github.com/acme/web/pull/88');
   assert.ok(rep.needsAPerson.some((n) => n.issueKey === 'APP-103' && n.outcome === 'expired'));
+  assert.equal(new Set(rep.needsAPerson.map((n) => n.issueKey)).size, rep.needsAPerson.length, 'one row per work item');
+
+  // Once an agent picks the work item up again, it no longer needs a person.
+  const again = await app.claimWork({ issueKey: 'APP-103', agent: 'codex', paths: 'src/billing/rounding.ts', repo: 'acme/web' }, as('mei'));
+  assert.equal(again.granted, true);
+  const rep2 = await app.agentReport({ hours: 14, projectKey: 'APP' }, as('yu'));
+  assert.ok(!rep2.needsAPerson.some((n) => n.issueKey === 'APP-103'));
+  await app.releaseWork({ leaseId: again.lease.leaseId, outcome: 'abandoned' }, as('mei'));
 });
 
 test('closing a work item in Jira ends the agent lease', async () => {

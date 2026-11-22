@@ -326,7 +326,7 @@ test('holders of a shared file hear about the other change on their next heartbe
   const a = claimOn(L.emptyBoard(), 'APP-1', 'src/auth/**, package.json', { repo: 'acme/web' });
   const b = claimOn(a.board, 'APP-2', 'src/ui, package.json', { agent: 'codex', accountId: 'mei', ownerName: 'Mei', repo: 'acme/web' });
   const hb = L.heartbeat(b.board, { leaseId: a.decision.lease.id }, ctx({ now: T0 + MIN }));
-  assert.match(hb.decision.reasons[0], /codex \(for Mei\) also changes shared file\(s\) "package.json" for APP-2/);
+  assert.match(hb.decision.reasons[0], /codex \(for Mei\) also changes shared file "package.json" for APP-2/);
   const hb2 = L.heartbeat(hb.board, { leaseId: a.decision.lease.id }, ctx({ now: T0 + 2 * MIN }));
   assert.equal(hb2.decision.reasons.length, 0, 'told once');
 });
@@ -362,7 +362,7 @@ test('Lease gate: blocks closing while an agent works, and after an out-of-lease
   const strayed = { held: true, state: 'awaiting-merge', kind: 'agent', agent: 'codex', scopeCheck: { clean: false, outside: ['src/billing/x.ts'], protectedTouched: [] } };
   const g2 = L.gate(strayed, [], T0);
   assert.equal(g2.result, false);
-  assert.match(g2.errorMessage, /1 file\(s\) outside its lease \(src\/billing\/x\.ts\).*lease-reviewed/);
+  assert.match(g2.errorMessage, /1 file outside its lease \(src\/billing\/x\.ts\).*lease-reviewed/);
   assert.equal(L.gate(strayed, ['lease-reviewed'], T0).result, true);
   assert.equal(L.gate({ ...strayed, scopeCheck: { clean: true, outside: [], protectedTouched: [] } }, [], T0).result, true);
 });

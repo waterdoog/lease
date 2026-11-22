@@ -22,6 +22,7 @@ import ForgeReconciler, {
   TextArea,
   Textfield,
   Toggle,
+  User,
   xcss,
 } from '@forge/react';
 import { invoke, router } from '@forge/bridge';
@@ -30,25 +31,41 @@ import { PolicyEditor } from './policy-editor';
 
 const REPO_URL = 'https://github.com/waterdoog/lease';
 
-const tile = xcss({ padding: 'space.200', borderRadius: 'border.radius.200', backgroundColor: 'color.background.neutral.subtle', minWidth: '150px' });
+const tile = xcss({
+  paddingBlock: 'space.150',
+  paddingInline: 'space.200',
+  borderRadius: 'border.radius.200',
+  borderWidth: 'border.width',
+  borderStyle: 'solid',
+  borderColor: 'color.border',
+  backgroundColor: 'elevation.surface',
+  minWidth: '150px',
+});
 
-function Stat({ label, value, tone }) {
+function Stat({ label, value, warn }) {
   return (
     <Box xcss={tile}>
       <Stack space="space.050">
-        <Text>{label}</Text>
-        <Heading size="large">{String(value)}</Heading>
-        {tone ? <Lozenge appearance={tone.appearance}>{tone.text}</Lozenge> : null}
+        <Text size="small" color="color.text.subtle">{label}</Text>
+        <Inline space="space.100" alignBlock="center">
+          <Heading size="large">{String(value)}</Heading>
+          {warn && value ? <Lozenge appearance="moved">needs a look</Lozenge> : null}
+        </Inline>
       </Stack>
     </Box>
   );
 }
 
-const issueLink = (key) => key === '(hidden)' ? <Text>(a work item you cannot see)</Text> : (
-  <Button appearance="link" spacing="none" onClick={() => router.navigate(`/browse/${key}`)}>
-    {key}
-  </Button>
+const issueLink = (key) => key === '(hidden)' ? <Text color="color.text.subtle">a work item you cannot see</Text> : <Link href={`/browse/${key}`}>{key}</Link>;
+
+const workItem = (key, summary) => (
+  <Stack space="space.025">
+    {issueLink(key)}
+    {summary ? <Text size="small" color="color.text.subtle" maxLines={1}>{summary}</Text> : null}
+  </Stack>
 );
+
+const forPerson = (l) => l.ownerAccountId ? <User accountId={l.ownerAccountId} /> : <Text>{l.owner || ''}</Text>;
 
 function LiveTable({ leases, now }) {
   if (!leases.length) return <EmptyState header="No agent holds any work right now" description="When a coding agent claims a work item through the Lease MCP tools, it shows up here." />;
@@ -58,9 +75,10 @@ function LiveTable({ leases, now }) {
         cells: [
           { key: 'issue', content: 'Work item' },
           { key: 'agent', content: 'Agent' },
-          { key: 'paths', content: 'Paths' },
-          { key: 'hb', content: 'Last heartbeat' },
-          { key: 'exp', content: 'Expires' },
+          { key: 'who', content: 'Working for' },
+          { key: 'paths', content: 'Files' },
+          { key: 'hb', content: 'Status' },
+          { key: 'exp', content: 'Last heartbeat' },
         ],
       }}
       rows={leases.map((l) => {
@@ -69,11 +87,12 @@ function LiveTable({ leases, now }) {
         return {
           key: l.leaseId,
           cells: [
-            { key: 'issue', content: <Stack space="space.0">{issueLink(l.issueKey)}<Text>{l.summary}</Text></Stack> },
-            { key: 'agent', content: l.kind === 'review' ? <Stack space="space.0"><Strong>{l.agent}</Strong><Lozenge appearance="moved">awaiting merge</Lozenge></Stack> : l.kind === 'person' ? <Stack space="space.0"><Strong>{l.owner}</Strong><Lozenge appearance="new">person, by hand</Lozenge></Stack> : <Stack space="space.0"><Strong>{l.agent}</Strong><Text>{l.owner ? `for ${l.owner}` : ''}</Text></Stack> },
+            { key: 'issue', content: workItem(l.issueKey, l.summary) },
+            { key: 'agent', content: l.kind === 'person' ? <Lozenge appearance="new">by hand</Lozenge> : <Inline space="space.075" alignBlock="center"><Strong>{l.agent}</Strong>{l.kind === 'review' ? <Lozenge appearance="moved">awaiting merge</Lozenge> : null}</Inline> },
+            { key: 'who', content: forPerson(l) },
             { key: 'paths', content: <Inline space="space.050" shouldWrap>{l.paths.map((p) => <Code key={p}>{p}</Code>)}</Inline> },
-            { key: 'hb', content: <Lozenge appearance={stale ? 'moved' : 'success'}>{ago(hb, now)}</Lozenge> },
-            { key: 'exp', content: <Text>{until(Date.parse(l.expiresAt), now)}</Text> },
+            { key: 'hb', content: l.kind === 'person' ? <Lozenge>reserved</Lozenge> : l.kind === 'review' ? <Lozenge appearance="moved">in review</Lozenge> : <Lozenge appearance={stale ? 'moved' : 'success'}>{stale ? 'silent' : 'active'}</Lozenge> },
+            { key: 'exp', content: <Text size="small" color="color.text.subtle">{ago(hb, now)} · ends {until(Date.parse(l.expiresAt), now)}</Text> },
           ],
         };
       })}
@@ -86,27 +105,34 @@ function ReportView({ report }) {
   return (
     <Stack space="space.300">
       {report.needsAPerson.length ? (
-        <SectionMessage appearance="warning" title={`${report.needsAPerson.length} item(s) need a person`}>
-          <Stack space="space.050">
-            {report.needsAPerson.map((n, i) => (
-              <Text key={i}>
-                {issueLink(n.issueKey)} — {n.outcome}
-                {n.lastNote ? `: ${n.lastNote}` : ''}
-              </Text>
-            ))}
-          </Stack>
+        <SectionMessage appearance="warning" title={report.needsAPerson.length === 1 ? 'One work item needs a person' : `${report.needsAPerson.length} work items need a person`}>
+          <Text>An agent stopped on these without finishing. Pick them up or hand them to another agent.</Text>
         </SectionMessage>
+      ) : null}
+      {report.needsAPerson.length ? (
+        <DynamicTable
+          head={{ cells: [{ key: 'i', content: 'Work item' }, { key: 'a', content: 'Agent' }, { key: 'o', content: 'What happened' }, { key: 'n', content: 'Last note' }] }}
+          rows={report.needsAPerson.map((n) => ({
+            key: n.issueKey,
+            cells: [
+              { key: 'i', content: workItem(n.issueKey, n.summary) },
+              { key: 'a', content: <Text>{n.agent || '—'}</Text> },
+              { key: 'o', content: <Lozenge appearance={n.outcome === 'expired' ? 'moved' : 'removed'}>{n.outcome === 'expired' ? 'went silent' : n.outcome}</Lozenge> },
+              { key: 'n', content: <Text size="small" color="color.text.subtle">{n.lastNote || '—'}</Text> },
+            ],
+          }))}
+        />
       ) : null}
       <Stack space="space.100">
         <Heading size="small">Finished by agents</Heading>
-        {report.awaitingMerge.length ? <Text>{report.awaitingMerge.length} pull request(s) awaiting merge keep their files reserved: {report.awaitingMerge.map((l) => l.issueKey).join(', ')}.</Text> : null}
+        {report.awaitingMerge.length ? <Text>Awaiting merge: {report.awaitingMerge.map((l) => l.issueKey).join(', ')}. The next agent that touches their files is pointed at the pull request.</Text> : null}
         {report.finishedWork.length ? (
           <DynamicTable
             head={{ cells: [{ key: 'i', content: 'Work item' }, { key: 'a', content: 'Agent' }, { key: 'o', content: 'Outcome' }, { key: 'w', content: 'What it did' }, { key: 'p', content: 'PR' }] }}
             rows={report.finishedWork.map((f, i) => ({
               key: `f${i}`,
               cells: [
-                { key: 'i', content: issueLink(f.issueKey) },
+                { key: 'i', content: workItem(f.issueKey, f.summary) },
                 { key: 'a', content: <Text>{f.agent} · {f.minutes} min</Text> },
                 { key: 'o', content: <Lozenge appearance={f.outcome === 'done' ? 'success' : f.outcome === 'revoked' ? 'removed' : 'moved'}>{f.outcome}</Lozenge> },
                 { key: 'w', content: <Text>{f.whatItDid || '—'}</Text> },
@@ -244,22 +270,18 @@ function App() {
   const t = data.report.totals;
   return (
     <Stack space="space.300">
-      <Stack space="space.050">
-        <Heading size="large">Agent control tower</Heading>
-        <Text>Every AI coding agent working in this site claims its Jira work here first. Live, refreshed every few seconds.</Text>
-        <Inline space="space.100" alignBlock="end">
-          <Stack space="space.050">
-            <Label labelFor="pf">Project</Label>
-            <Textfield id="pf" value={project} onChange={(e) => setProject(e.target.value.toUpperCase())} placeholder="All projects" />
-          </Stack>
-        </Inline>
-      </Stack>
+      <Inline spread="space-between" alignBlock="end" shouldWrap space="space.200">
+        <Text color="color.text.subtle">Every AI coding agent on this site claims its work item and files here before it writes code.</Text>
+        <Box xcss={xcss({ width: '220px' })}>
+          <Textfield id="pf" aria-label="Filter by project" value={project} onChange={(e) => setProject(e.target.value.toUpperCase())} placeholder="Filter by project key" />
+        </Box>
+      </Inline>
       <Inline space="space.200" shouldWrap>
         <Stat label="Agents at work" value={data.count} />
-        <Stat label="Awaiting merge" value={data.report.awaitingMerge.length} />
-        <Stat label="Collisions prevented, 24 h" value={t.collisionsPrevented + t.humanWorkProtected} tone={t.collisionsPrevented + t.humanWorkProtected ? { appearance: 'success', text: 'nobody overwrote anybody' } : null} />
-        <Stat label="Finished, 24 h" value={t.finished} />
-        <Stat label="Needs a person" value={data.report.needsAPerson.length} tone={data.report.needsAPerson.length ? { appearance: 'moved', text: 'see Last 24 hours' } : null} />
+        {data.report.awaitingMerge.length ? <Stat label="Awaiting merge" value={data.report.awaitingMerge.length} /> : null}
+        <Stat label="Collisions prevented · 24 h" value={t.collisionsPrevented + t.humanWorkProtected} />
+        <Stat label="Finished · 24 h" value={t.finished} />
+        <Stat label="Needs a person" value={data.report.needsAPerson.length} warn />
       </Inline>
       <Tabs id="tower-tabs">
         <TabList>

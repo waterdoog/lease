@@ -142,7 +142,7 @@ if (mode === 'post') {
   process.exit(0);
 } else if (mode === 'record') {
   const st = remember(findResult(process.argv[3] || readStdin()), process.argv[4]);
-  console.log(`Lease guard: ${Object.keys(st.leases).length} active lease(s) recorded.`);
+  console.log(`Lease guard: ${Object.keys(st.leases).length} active ${Object.keys(st.leases).length === 1 ? "lease" : "leases"} recorded.`);
 } else if (mode === 'pre') {
   if (off) process.exit(0);
   const ev = JSON.parse(readStdin() || '{}');

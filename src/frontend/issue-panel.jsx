@@ -24,6 +24,7 @@ import ForgeReconciler, {
   Link,
   useProductContext,
   xcss,
+  User,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
 import { ago, until, eventLine } from './format';
@@ -48,7 +49,7 @@ function Paths({ lease }) {
   return (
     <Stack space="space.050">
       <Text>
-        <Strong>Paths{lease.repo && lease.repo !== 'default' ? ` in ${lease.repo}` : ''}</Strong>
+        <Strong>Files</Strong>{lease.repo && lease.repo !== 'default' ? <Text as="span" color="color.text.subtle"> in {lease.repo}</Text> : null}
       </Text>
       <Inline space="space.050" shouldWrap>
         {lease.paths.map((p) => (
@@ -57,7 +58,7 @@ function Paths({ lease }) {
       </Inline>
       {lease.mustNotTouch?.length ? (
         <Inline space="space.050" shouldWrap alignBlock="center">
-          <Text>Must not touch (people only):</Text>
+          <Text size="small" color="color.text.subtle">Off limits (people only):</Text>
           {lease.mustNotTouch.map((p) => (
             <Lozenge key={p} appearance="removed">
               {p}
@@ -106,12 +107,17 @@ function LeaseCard({ lease, now, mine, onRevoke, onRelease }) {
           <Lozenge appearance={person ? 'new' : 'inprogress'} isBold>
             {person ? 'Reserved by a person' : 'Agent at work'}
           </Lozenge>
-          <Text>
-            <Strong>{person ? lease.owner : lease.agent}</Strong>
-            {!person && lease.owner ? ` for ${lease.owner}` : person ? ' is changing these files by hand' : ''}
-          </Text>
+          {person ? (
+            lease.ownerAccountId ? <User accountId={lease.ownerAccountId} /> : <Strong>{lease.owner}</Strong>
+          ) : (
+            <Inline space="space.075" alignBlock="center">
+              <Strong>{lease.agent}</Strong>
+              <Text color="color.text.subtle">for</Text>
+              {lease.ownerAccountId ? <User accountId={lease.ownerAccountId} /> : <Text>{lease.owner}</Text>}
+            </Inline>
+          )}
         </Inline>
-        <Text>
+        <Text size="small" color="color.text.subtle">
           Since {ago(Date.parse(lease.since), now)} · {person ? 'renewed' : 'last heartbeat'} {ago(Date.parse(lease.lastHeartbeat), now)} · ends {until(exp, now)}
         </Text>
         <ProgressBar value={Math.min(1, left / total)} appearance={left < 5 * 60000 ? 'warning' : 'default'} ariaLabel="Time left on the lease" />
@@ -128,8 +134,8 @@ function LeaseCard({ lease, now, mine, onRevoke, onRelease }) {
               <Strong>Progress</Strong>
             </Text>
             {[...lease.notes].reverse().map((n, i) => (
-              <Text key={i}>
-                {ago(Date.parse(n.at), now)} — {n.text}
+              <Text key={i} size="small">
+                <Text as="span" color="color.text.subtle">{ago(Date.parse(n.at), now)}</Text> {n.text}
               </Text>
             ))}
           </Stack>

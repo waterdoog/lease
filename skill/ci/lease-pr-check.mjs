@@ -77,7 +77,7 @@ if (lease.state === 'revoked') {
 
 const outside = changed.filter((f) => !(lease.paths || []).some((p) => pathMatches(p, f)));
 const banned = changed.filter((f) => (lease.mustNotTouch || []).some((p) => pathMatches(p, f)));
-say(`${key}: ${lease.kind === 'person' ? lease.owner : lease.agent} leased ${(lease.paths || []).join(', ')}${lease.state !== 'held' ? ` (lease ${lease.state})` : ''}. ${changed.length} changed file(s).`);
+say(`${key}: ${lease.kind === 'person' ? lease.owner : lease.agent} leased ${(lease.paths || []).join(', ')}${lease.state !== 'held' ? ` (lease ${lease.state})` : ''}. ${changed.length} changed ${changed.length === 1 ? "file" : "files"}.`);
 if (outside.length) say(`Outside the lease:\n${outside.slice(0, 50).map((f) => `- ${f}`).join('\n')}`);
 if (banned.length) say(`In paths only people may change:\n${banned.slice(0, 50).map((f) => `- ${f}`).join('\n')}`);
 if (!outside.length && !banned.length) say('All changed files are inside the lease.');

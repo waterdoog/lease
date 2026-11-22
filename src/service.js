@@ -233,12 +233,12 @@ export async function releaseLease(input, { accountId }) {
         l.prUrl ? ['Pull request: ', { text: l.prUrl, link: l.prUrl }] : null,
         l.scopeCheck
           ? l.scopeCheck.clean
-            ? `Scope check: all ${l.scopeCheck.checked} changed files are inside the lease.`
+            ? l.scopeCheck.checked === 1 ? 'Scope check: the changed file is inside the lease.' : `Scope check: all ${l.scopeCheck.checked} changed files are inside the lease.`
             : [
                 { text: 'Scope check failed. ', strong: true },
                 [
-                  l.scopeCheck.outside.length ? `${l.scopeCheck.outside.length} changed file(s) outside the lease: ${l.scopeCheck.outside.slice(0, 8).join(', ')}.` : '',
-                  l.scopeCheck.protectedTouched.length ? ` Protected path(s) changed: ${l.scopeCheck.protectedTouched.slice(0, 8).join(', ')}.` : '',
+                  l.scopeCheck.outside.length ? `${core.count(l.scopeCheck.outside.length, 'changed file')} outside the lease: ${l.scopeCheck.outside.slice(0, 8).join(', ')}.` : '',
+                  l.scopeCheck.protectedTouched.length ? ` Protected ${l.scopeCheck.protectedTouched.length === 1 ? 'path' : 'paths'} changed: ${l.scopeCheck.protectedTouched.slice(0, 8).join(', ')}.` : '',
                 ].join(''),
               ]
           : null,
@@ -318,10 +318,19 @@ export async function simulateAgents(projectKey, { accountId }) {
   const pk = String(projectKey || '').trim().toUpperCase();
   const found = await findWork({ projectKey: pk, limit: 25 });
   const pick = (re) => found.available.find((a) => re.test(a.summary));
-  const a = pick(/rate limit/i) || found.available[0];
-  const b = pick(/refresh token/i) || found.available.find((x) => x !== a);
-  const c = pick(/invoice|rounding/i) || found.available.find((x) => x !== a && x !== b);
-  if (!a || !b || !c) return { ok: false, reasons: [`Need three work items open to agents in ${pk}. Add sample work items first.`] };
+  // The script only makes sense on the sample work items it was written for; never borrow unrelated ones.
+  const a = pick(/rate limit/i);
+  const b = pick(/refresh token/i);
+  const c = pick(/invoice|rounding/i);
+  if (!a || !b || !c) {
+    const busy = found.unavailable.filter((u) => /rate limit|refresh token|invoice|rounding/i.test(u.summary));
+    return {
+      ok: false,
+      reasons: busy.length
+        ? [`The simulator uses the sample work items, and some are taken right now: ${busy.map((u) => `${u.issueKey} (${u.heldBy})`).join(', ')}. Try again when they are free.`]
+        : [`The simulator needs the sample work items in ${pk}. Add them first.`],
+    };
+  }
   const steps = [];
   const log = (who, what, r) => steps.push({ who, what, granted: r.granted, result: r.result, says: (r.reasons || [])[0] || (r.lease ? `lease ${r.lease.leaseId} until ${r.lease.expiresAt}` : '') });
   const r1 = await claimWork({ issueKey: a.issueKey, agent: 'sim-claude', repo: SIM_REPO, paths: 'src/auth/**, tests/auth/**', intent: 'Rate limit on /login (simulated agent)' }, { accountId });
@@ -329,13 +338,13 @@ export async function simulateAgents(projectKey, { accountId }) {
   if (r1.granted) log('sim-claude', 'sends a heartbeat', await heartbeatLease({ leaseId: r1.lease.leaseId, note: 'Limiter middleware drafted (simulated)' }, { accountId }));
   log('sim-codex', `claims ${b.issueKey} for src/auth/session.ts`, await claimWork({ issueKey: b.issueKey, agent: 'sim-codex', repo: SIM_REPO, paths: 'src/auth/session.ts', intent: 'Rotate refresh tokens (simulated agent)' }, { accountId }));
   log('sim-codex', `claims ${c.issueKey} for src/billing/** instead`, await claimWork({ issueKey: c.issueKey, agent: 'sim-codex', repo: SIM_REPO, paths: 'src/billing/**', intent: 'Fix invoice rounding (simulated agent)' }, { accountId }));
-  const e = pick(/cache|header/i) || found.available.find((x) => ![a, b, c].includes(x));
+  const e = pick(/cache|header/i);
   if (e) {
     const me = await reservePaths({ issueKey: e.issueKey, paths: 'src/http', repo: SIM_REPO, hours: 1 }, { accountId });
     log('you (by hand)', `reserve src/http for ${e.issueKey} for 1 hour`, me);
     log('sim-cursor', `would claim ${b.issueKey} for src/http/cache.ts (checked, not taken)`, await dryRunClaim({ issueKey: b.issueKey, agent: 'sim-cursor', repo: SIM_REPO, paths: 'src/http/cache.ts' }, { accountId }));
   }
-  const d = pick(/rename|column|migration/i) || found.available.find((x) => ![a, b, c, e].includes(x));
+  const d = pick(/rename|column|migration/i);
   if (d) log('sim-cursor', `would claim ${d.issueKey} for db/migrations/0042.sql (checked, not taken)`, await dryRunClaim({ issueKey: d.issueKey, agent: 'sim-cursor', repo: SIM_REPO, paths: 'db/migrations/0042.sql' }, { accountId }));
   return { ok: true, steps };
 }
@@ -403,6 +412,7 @@ export async function report({ hours = 12, projectKey } = {}) {
   const finished = history.filter((h) => inProject(h.issueKey));
   const ev = events.filter((e) => inProject(e.issueKey));
   const count = (t, extra = () => true) => ev.filter((e) => e.type === t && extra(e)).length;
+  const activeKeys = new Set(core.activeLeases(board, now).map((l) => l.issueKey));
   return {
     window: { from: core.fmtTime(since), to: core.fmtTime(now) },
     totals: {
@@ -426,9 +436,10 @@ export async function report({ hours = 12, projectKey } = {}) {
       whatItDid: h.summaryOfWork || (h.notes?.length ? h.notes[h.notes.length - 1].text : ''),
       minutes: Math.max(1, Math.round((h.endedAt - h.createdAt) / 60000)),
     })),
-    needsAPerson: finished
-      .filter((h) => ['blocked', 'handed-back', 'expired'].includes(h.outcome))
-      .map((h) => ({ issueKey: h.issueKey, outcome: h.outcome, lastNote: h.summaryOfWork || h.notes?.[h.notes.length - 1]?.text || '' })),
+    // One row per work item: its newest outcome, and only if nobody has picked it up again since.
+    needsAPerson: [...new Map(finished.map((h) => [h.issueKey, h]).reverse()).values()].reverse()
+      .filter((h) => ['blocked', 'handed-back', 'expired'].includes(h.outcome) && !activeKeys.has(h.issueKey))
+      .map((h) => ({ issueKey: h.issueKey, summary: h.summary, agent: h.agent, outcome: h.outcome, at: core.fmtTime(h.endedAt), lastNote: h.summaryOfWork || h.notes?.[h.notes.length - 1]?.text || '' })),
     stillRunning: core.activeLeases(board, now).filter((l) => inProject(l.issueKey) && !l.kind).map(core.publicLease),
     awaitingMerge: core.activeLeases(board, now).filter((l) => inProject(l.issueKey) && l.kind === core.REVIEW).map(core.publicLease),
     reservedByPeople: core.activeLeases(board, now).filter((l) => inProject(l.issueKey) && l.kind === core.PERSON).map(core.publicLease),
