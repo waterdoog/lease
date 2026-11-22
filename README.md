@@ -71,6 +71,13 @@ another.
 | **Per-project policy** | In each project's settings (and the control tower), admins set the label, default repository, leases per agent, lease length, protected and shared paths, the hold-until-merged rule, block or warn on agent overlaps, and whether in-progress human work is off limits. |
 | **Try it without an agent** | The control tower can add sample work items and run two simulated agents through the real claim code. |
 
+* **Steer an agent without stopping it.** From the work item, a person can message the agent that
+  holds it ("use the shared limiter in src/lib/rate.ts"). The message arrives with the agent's next
+  heartbeat; the panel shows whether it was delivered.
+* **Blocked work waits.** Agents are not offered, and cannot claim, a work item whose "is blocked by"
+  link is still open.
+* **Choose which agents may work.** A project can list the agents allowed to claim its work; others
+  are refused with a plain reason.
 ## How it is built
 
 * **Forge, nothing else.** No external services, no API keys, no egress.
