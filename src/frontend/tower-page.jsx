@@ -67,7 +67,7 @@ const workItem = (key, summary) => (
 
 const forPerson = (l) => l.ownerAccountId ? <User accountId={l.ownerAccountId} /> : <Text>{l.owner || ''}</Text>;
 
-const REFUSAL = { PATH_COLLISION: 'files taken', ISSUE_LEASED: 'work item taken', HUMAN_WORKING: 'a person is on it', PROTECTED_PATH: 'people only', NOT_READY: 'not open to agents' };
+const REFUSAL = { PATH_COLLISION: 'files taken', ISSUE_LEASED: 'work item taken', HUMAN_WORKING: 'a person is on it', PROTECTED_PATH: 'people only', NOT_READY: 'not open to agents', AGENT_NOT_ALLOWED: 'agent not allowed', BLOCKED_BY: 'blocked' };
 
 function Refusals({ denials, now, limit }) {
   const rows = denials.slice(0, limit);

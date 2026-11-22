@@ -23,6 +23,8 @@ const CODES = {
   NOT_AGENT_READY: 'not marked safe for agents',
   AGENT_BUSY: 'agent at its lease limit',
   TOO_BROAD: 'claim too broad',
+  AGENT_NOT_ALLOWED: 'agent not allowed in this project',
+  BLOCKED_BY: 'blocked by another work item',
 };
 
 export function eventLine(e) {
@@ -42,6 +44,8 @@ export function eventLine(e) {
       return `${who} went silent; lease expired and work returned to the queue`;
     case 'revoked':
       return `${e.by || 'A person'} took it back from ${who}`;
+    case 'messaged':
+      return `${e.by || 'A person'} sent ${who} a message`;
     case 'human-overlap':
       return `${e.owner || 'A person'} started it while ${who} held the lease`;
     default:
