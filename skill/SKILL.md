@@ -28,8 +28,12 @@ outside your lease are blocked locally. Follow the protocol and you will never h
    - `intent`: one sentence on your plan.
 
    If `granted` is false, **do not edit anything**. Read `result` and `reasons`:
-   - `PATH_COLLISION`: another agent, or a person working by hand, holds overlapping paths.
-     Narrow your paths to files they do not cover, choose other work, or wait until `retryAfter`.
+   - `PATH_COLLISION`: another agent, a person working by hand, or a pull request awaiting
+     merge holds overlapping paths. Narrow your paths to files they do not cover, choose other
+     work, or wait until `retryAfter`. If it is a pull request, you may build on its branch.
+   - A granted claim can carry `reasons` about shared files (`package.json`, `index.ts`):
+     keep your changes to those additive. Heartbeats may bring the same note when another
+     agent starts changing a shared file you hold.
    - `HUMAN_WORKING`, `ISSUE_LEASED`: someone else is on it. Choose other work.
    - `PROTECTED_PATH`: a person must make that change. Tell your person.
    - `NOT_AGENT_READY`: the work item is not handed to agents. Tell your person.
@@ -55,7 +59,9 @@ outside your lease are blocked locally. Follow the protocol and you will never h
    `blocked` or `abandoned`), a short `summary` of what you changed or what a person needs
    to decide, `prUrl` if you opened a pull request, and `changedFiles` (from
    `git diff --name-only <base>...HEAD`). Lease posts this on the work item and checks the
-   change stayed inside the lease.
+   change stayed inside the lease. With `outcome: done` and a `prUrl`, the files you changed
+   stay reserved for your pull request until the work item is Done; to address review
+   comments later, call `claim-work` on the same work item again.
 
 ## Example
 
