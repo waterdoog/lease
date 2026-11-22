@@ -34,6 +34,9 @@ export const DEFAULT_POLICY = Object.freeze({
   // Statuses that mean "merged" before Done (e.g. "In QA", "Staging"): a pull
   // request hold ends when the work item reaches one of them.
   mergedStatuses: [],
+  // A handed-off pull request's files: 'warn' tells the next agent (and grants),
+  // 'block' refuses overlapping claims until the work item is Done.
+  reviewHoldMode: 'warn',
 });
 
 // One record holds every active lease on the site (that is what makes grants
@@ -61,6 +64,7 @@ export function resolvePolicy(stored) {
   p.holdUntilMerged = p.holdUntilMerged !== false;
   p.reviewHoldHours = int(p.reviewHoldHours, 1, 336, DEFAULT_POLICY.reviewHoldHours);
   p.collisionMode = p.collisionMode === 'warn' ? 'warn' : 'block';
+  p.reviewHoldMode = p.reviewHoldMode === 'block' ? 'block' : 'warn';
   p.mergedStatuses = (Array.isArray(p.mergedStatuses) ? p.mergedStatuses : String(p.mergedStatuses || '').split(','))
     .map((x) => String(x).trim())
     .filter(Boolean)
@@ -137,7 +141,8 @@ function collisionsWith(board, { repo, patterns, excludeId }, now, policy) {
     const all = overlaps(patterns, l.paths);
     // Shared files are only shared between agents: a person's reservation is never bypassed.
     const blocking = l.kind === PERSON ? all : all.filter((p) => !isSharedClaim(p.mine, policy) && !isSharedClaim(p.theirs, policy));
-    if (blocking.length) hits.push({ lease: l, pairs: blocking });
+    if (blocking.length && l.kind === REVIEW && policy?.reviewHoldMode !== 'block') shared.push({ lease: l, pairs: all, reviewWarn: true });
+    else if (blocking.length) hits.push({ lease: l, pairs: blocking });
     else if (all.length) shared.push({ lease: l, pairs: all });
   }
   hits.shared = shared;
@@ -158,7 +163,9 @@ function alertSharers(next, hits, lease) {
 
 function sharedNotes(hits) {
   return (hits.shared || []).map((h) =>
-    h.warnOnly
+    h.reviewWarn
+      ? `Heads-up: ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} overlaps files in a pull request awaiting review for ${h.lease.issueKey}${h.lease.prUrl ? ` (${h.lease.prUrl})` : ''}. Build on that branch, or expect to resolve a merge conflict.`
+      : h.warnOnly
       ? `Warning: ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} overlaps ${h.lease.issueKey} (${describeHolder(h.lease)}). This project warns instead of refusing; coordinate before changing the same lines.`
       : `Shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} also in ${h.lease.issueKey} (${describeHolder(h.lease)}): keep your changes additive so git can merge them.`
   );

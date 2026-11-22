@@ -79,8 +79,8 @@ export function PolicyEditor({ projectKey: fixed }) {
             <Label labelFor="warn">Warn instead of refusing when two agents' paths overlap (people, protected paths and work in progress are always enforced)</Label>
           </Inline>
           <Inline space="space.100" alignBlock="center">
-            <Toggle id="hold" isChecked={policy.holdUntilMerged} onChange={() => setPolicy({ ...policy, holdUntilMerged: !policy.holdUntilMerged })} />
-            <Label labelFor="hold">Keep a handed-off pull request's files reserved until the work item is Done (at most {policy.reviewHoldHours} hours)</Label>
+            <Toggle id="hold" isChecked={policy.holdUntilMerged && policy.reviewHoldMode === 'block'} onChange={() => setPolicy({ ...policy, holdUntilMerged: true, reviewHoldMode: policy.reviewHoldMode === 'block' ? 'warn' : 'block' })} />
+            <Label labelFor="hold">Refuse (instead of warn) agents that touch files of a pull request awaiting merge (at most {policy.reviewHoldHours} hours)</Label>
           </Inline>
           <Inline>
             <Button appearance="primary" onClick={save}>Save policy</Button>

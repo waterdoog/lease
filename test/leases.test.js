@@ -298,8 +298,12 @@ test('done work with a PR keeps its changed files reserved until merged', () => 
   assert.deepEqual(r.decision.lease.heldForReview.paths, ['src/auth/login.ts', 'src/auth/limit.ts']);
   const hold = Object.values(r.board.leases)[0];
   assert.equal(hold.expiresAt, T0 + 10 * MIN + 24 * 60 * MIN);
-  // another agent: the changed file is reserved, the rest of the folder is free
-  const b = claimOn(r.board, 'APP-2', 'src/auth/login.ts', { agent: 'codex', accountId: 'mei', repo: 'acme/web', now: T0 + 11 * MIN });
+  // default: the next agent is told about the open pull request, not refused
+  const w = claimOn(r.board, 'APP-2', 'src/auth/login.ts', { agent: 'codex', accountId: 'mei', repo: 'acme/web', now: T0 + 11 * MIN });
+  assert.equal(w.decision.code, 'GRANTED');
+  assert.match(w.decision.reasons[0], /^Heads-up: "src\/auth\/login.ts" overlaps files in a pull request awaiting review for APP-1 \(https:\/\/github.com\/acme\/web\/pull\/88\)/);
+  // a project that wants it strict: the changed file is reserved, the rest of the folder is free
+  const b = claimOn(r.board, 'APP-2', 'src/auth/login.ts', { agent: 'codex', accountId: 'mei', repo: 'acme/web', now: T0 + 11 * MIN, policy: { reviewHoldMode: 'block' } });
   assert.equal(b.decision.code, 'PATH_COLLISION');
   assert.match(b.decision.reasons[0], /awaiting review \(https:\/\/github.com\/acme\/web\/pull\/88\)/);
   assert.ok(b.decision.suggestions.some((x) => /build on top of/.test(x)));

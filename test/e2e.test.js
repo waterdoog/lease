@@ -265,9 +265,10 @@ test('released work keeps its paths on the issue property for CI', async () => {
 
 test('a PR awaiting review keeps its files until the work item is Done', async () => {
   issue('APP-130', 'Session cookie flags');
-  const r = await app.claimWork({ issueKey: 'APP-130', agent: 'cursor', paths: 'src/auth/session.ts', repo: 'acme/web' }, as('sam'));
-  assert.equal(r.result, 'PATH_COLLISION', 'APP-102 PR still awaiting review');
-  assert.match(r.reasons[0], /awaiting review \(https:\/\/github.com\/acme\/web\/pull\/88\)/);
+  jira.currentUser = 'sam';
+  const r = await app.resolverHandler('dryRun', { issueKey: 'APP-130', agent: 'cursor', paths: 'src/auth/session.ts', repo: 'acme/web' }, { accountId: 'sam' });
+  assert.equal(r.granted, true, 'by default an open PR warns instead of refusing');
+  assert.match(r.reasons[0], /Heads-up: .*awaiting review for APP-102 \(https:\/\/github.com\/acme\/web\/pull\/88\)/);
   assert.match(jira.comments['APP-102'].at(-1).text, /keeps src\/auth\/session.ts reserved for this pull request/);
   Object.assign(jira.issues['APP-102'], { status: 'Done', cat: 'done' });
   await app.onIssueUpdated({ issue: { key: 'APP-102' } });
