@@ -14,6 +14,8 @@ function issueKeyFrom(payload) {
 }
 
 const wrap = (fn) => async (payload = {}, context = {}) => {
+  // Shape only, never values: which identity fields does this invocation carry?
+  console.log(`action context: keys=${Object.keys(context || {}).join(',')} accountId=${!!context?.accountId} principal=${!!context?.principal?.accountId} payloadContext=${!!payload?.context}`);
   try {
     return await svc.visibleOnly(await fn(payload, { accountId: accountOf(payload, context) }));
   } catch (e) {

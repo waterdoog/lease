@@ -16,7 +16,8 @@ modules:
   rovo:agent:
     - key: lease-tower
       name: Lease Tower
-      description: Shows which Jira work AI coding agents hold, what is safe to hand to them, and what they did while you were away.
+      description: Shows which Jira work AI coding agents hold, what is safe to hand
+        to them, and what they did while you were away.
       icon: resource:icons;tower.svg
       prompt: |
         You are Lease Tower, the air-traffic controller for AI coding agents working in this Jira site.
@@ -60,7 +61,8 @@ modules:
           title: Project key
           type: string
           required: false
-          description: Jira project key such as "APP". Leave empty to search every project you can see.
+          description: Jira project key such as "APP". Leave empty to search every project
+            you can see.
         limit:
           title: Limit
           type: integer
@@ -84,17 +86,21 @@ modules:
           title: Agent name
           type: string
           required: true
-          description: Who is claiming, for example "claude-code", "codex" or "cursor". Add a suffix to tell parallel agents apart, such as "claude-code/2".
+          description: Who is claiming, for example "claude-code", "codex" or "cursor".
+            Add a suffix to tell parallel agents apart, such as "claude-code/2".
         paths:
           title: Paths
           type: string
           required: true
-          description: Comma-separated repository paths or globs you will change, for example "src/auth/**, tests/auth/**". A path without wildcards covers everything under it.
+          description: Comma-separated repository paths or globs you will change, for
+            example "src/auth/**, tests/auth/**". A path without wildcards
+            covers everything under it.
         repo:
           title: Repository
           type: string
           required: false
-          description: Repository name such as "acme/web". Paths only collide within the same repository.
+          description: Repository name such as "acme/web". Paths only collide within the
+            same repository.
         intent:
           title: Plan
           type: string
@@ -104,7 +110,8 @@ modules:
           title: Lease minutes
           type: integer
           required: false
-          description: How long the lease lasts without a heartbeat (default 30, capped by the project policy).
+          description: How long the lease lasts without a heartbeat (default 30, capped by
+            the project policy).
     - key: heartbeat
       name: Lease heartbeat
       function: heartbeat-fn
@@ -155,7 +162,8 @@ modules:
           title: Summary
           type: string
           required: false
-          description: What you changed, or why you stopped and what a person needs to decide.
+          description: What you changed, or why you stopped and what a person needs to
+            decide.
         prUrl:
           title: Pull request URL
           type: string
@@ -165,7 +173,8 @@ modules:
           title: Changed files
           type: string
           required: false
-          description: Comma-separated files your change touched (git diff --name-only against the base branch). Lease checks they are inside the lease.
+          description: Comma-separated files your change touched (git diff --name-only
+            against the base branch). Lease checks they are inside the lease.
     - key: check-paths
       name: Who holds these paths
       function: check-paths-fn
@@ -298,7 +307,7 @@ permissions:
     - storage:app
 
 app:
-  id: ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000
+  id: ari:cloud:ecosystem::app/253f3343-f9f7-49af-adf0-e4b3358cc935
   runtime:
     name: nodejs22.x
   storage:

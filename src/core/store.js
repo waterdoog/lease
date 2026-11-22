@@ -18,11 +18,11 @@ const MAX_ATTEMPTS = 8;
 
 export class ConflictError extends Error {}
 
-export function makeStore({ kvs, Filter, FilterConditions, WhereConditions, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+export function makeStore({ kvs, Filter, FilterConditions, WhereConditions, boardKey = BOARD_KEY, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const entity = () => kvs.entity(BOARD_ENTITY);
 
   async function readBoard() {
-    const rec = await entity().get(BOARD_KEY);
+    const rec = await entity().get(boardKey);
     if (!rec) return emptyBoard();
     return { rev: rec.rev, leases: rec.leases || {} };
   }
@@ -32,7 +32,7 @@ export function makeStore({ kvs, Filter, FilterConditions, WhereConditions, slee
     if (prev.rev === 0) {
       // First write ever: create the record only if nobody else just did.
       try {
-        await entity().set(BOARD_KEY, value, { keyPolicy: 'FAIL_IF_EXISTS' });
+        await entity().set(boardKey, value, { keyPolicy: 'FAIL_IF_EXISTS' });
       } catch (e) {
         throw new ConflictError(String(e && e.message));
       }
@@ -41,7 +41,7 @@ export function makeStore({ kvs, Filter, FilterConditions, WhereConditions, slee
     try {
       await kvs
         .transact()
-        .set(BOARD_KEY, value, {
+        .set(boardKey, value, {
           entityName: BOARD_ENTITY,
           conditions: new Filter().and('rev', FilterConditions.equalTo(prev.rev)),
         })
@@ -106,5 +106,7 @@ export function makeStore({ kvs, Filter, FilterConditions, WhereConditions, slee
     await kvs.set(`policy:${projectKey}`, policy);
   }
 
-  return { readBoard, update, logEvent, saveHistory, listPrefix, getPolicy, setPolicy };
+  const clear = () => entity().delete(boardKey);
+
+  return { readBoard, update, clear, logEvent, saveHistory, listPrefix, getPolicy, setPolicy };
 }
