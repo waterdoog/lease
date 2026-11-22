@@ -67,6 +67,27 @@ const workItem = (key, summary) => (
 
 const forPerson = (l) => l.ownerAccountId ? <User accountId={l.ownerAccountId} /> : <Text>{l.owner || ''}</Text>;
 
+const REFUSAL = { PATH_COLLISION: 'files taken', ISSUE_LEASED: 'work item taken', HUMAN_WORKING: 'a person is on it', PROTECTED_PATH: 'people only', NOT_READY: 'not open to agents' };
+
+function Refusals({ denials, now, limit }) {
+  const rows = denials.slice(0, limit);
+  if (!rows.length) return null;
+  return (
+    <DynamicTable
+      head={{ cells: [{ key: 'w', content: 'When' }, { key: 'a', content: 'Agent' }, { key: 'i', content: 'Wanted' }, { key: 'r', content: 'Refused because' }] }}
+      rows={rows.map((d, i) => ({
+        key: `d${i}`,
+        cells: [
+          { key: 'w', content: <Text size="small" color="color.text.subtle">{ago(Date.parse(d.at), now)}</Text> },
+          { key: 'a', content: <Strong>{d.agent}</Strong> },
+          { key: 'i', content: issueLink(d.issueKey) },
+          { key: 'r', content: <Stack space="space.050" alignInline="start"><Lozenge appearance="removed">{REFUSAL[d.code] || 'refused'}</Lozenge><Text size="small">{d.why}</Text></Stack> },
+        ],
+      }))}
+    />
+  );
+}
+
 function LiveTable({ leases, now }) {
   if (!leases.length) return <EmptyState header="No agent holds any work right now" description="When a coding agent claims a work item through the Lease MCP tools, it shows up here." />;
   return (
@@ -146,14 +167,10 @@ function ReportView({ report }) {
       </Stack>
       <Stack space="space.100">
         <Heading size="small">Refused claims</Heading>
-        <Text>
+        <Text color="color.text.subtle">
           {t.collisionsPrevented} collisions with other agents, {t.humanWorkProtected} times a person was already on it, {t.protectedPathsBlocked} protected paths.
         </Text>
-        {report.recentDenials.map((d, i) => (
-          <Text key={i}>
-            {d.agent} on {issueLink(d.issueKey)}: {d.why}
-          </Text>
-        ))}
+        <Refusals denials={report.recentDenials} now={report.now} limit={15} />
       </Stack>
     </Stack>
   );
@@ -292,12 +309,20 @@ function App() {
         </TabList>
         <TabPanel>
           <Box xcss={xcss({ paddingTop: 'space.200', width: '100%' })}>
-            <LiveTable leases={data.activeLeases} now={data.now} />
+            <Stack space="space.300">
+              <LiveTable leases={data.activeLeases} now={data.now} />
+              {data.report.recentDenials.some((d) => data.now - Date.parse(d.at) < 3600000) ? (
+                <Stack space="space.100">
+                  <Heading size="small">Refused in the last hour</Heading>
+                  <Refusals denials={data.report.recentDenials.filter((d) => data.now - Date.parse(d.at) < 3600000)} now={data.now} limit={5} />
+                </Stack>
+              ) : null}
+            </Stack>
           </Box>
         </TabPanel>
         <TabPanel>
           <Box xcss={xcss({ paddingTop: 'space.200', width: '100%' })}>
-            <ReportView report={data.report} />
+            <ReportView report={{ ...data.report, now: data.now }} />
           </Box>
         </TabPanel>
         <TabPanel>

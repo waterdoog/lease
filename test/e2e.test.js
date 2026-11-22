@@ -143,6 +143,18 @@ test('a full happy path ends with a PR on the work item and in the report', asyn
   await app.releaseWork({ leaseId: again.lease.leaseId, outcome: 'abandoned' }, as('mei'));
 });
 
+test('a heartbeat or release without a leaseId asks for it and is not logged as a refused claim', async () => {
+  const before = (await app.agentReport({ hours: 14, projectKey: 'APP' }, as('yu'))).recentDenials.length;
+  const hb = await app.heartbeat({ note: 'no id' }, as('mei'));
+  assert.equal(hb.result, 'BAD_REQUEST');
+  assert.match(hb.reasons[0], /needs the leaseId/);
+  assert.doesNotMatch(hb.reasons[0], /undefined/);
+  const rel = await app.releaseWork({ outcome: 'done' }, as('mei'));
+  assert.equal(rel.result, 'BAD_REQUEST');
+  const after = (await app.agentReport({ hours: 14, projectKey: 'APP' }, as('yu'))).recentDenials.length;
+  assert.equal(after, before);
+});
+
 test('closing a work item in Jira ends the agent lease', async () => {
   const c = await app.claimWork({ issueKey: 'APP-104', agent: 'cursor', paths: 'src/billing/columns.ts' }, as('mei'));
   assert.equal(c.granted, true);

@@ -179,7 +179,10 @@ export async function createSampleWork(projectKey) {
   return { ok: true, created };
 }
 
+const NEEDS_LEASE_ID = (tool) => ({ granted: false, result: 'BAD_REQUEST', reasons: [`${tool} needs the leaseId that claim-work returned. Call lease-status for your work item to find it.`] });
+
 export async function heartbeatLease(input, { accountId }) {
+  if (!input?.leaseId) return NEEDS_LEASE_ID('heartbeat');
   const now = Date.now();
   const box = shard(await repoOfLease(input.leaseId));
   const board0 = await box.readBoard();
@@ -189,7 +192,7 @@ export async function heartbeatLease(input, { accountId }) {
   await afterExpired(result.expired, now);
   const d = await explainGone(result.decision, input.leaseId, now);
   if (d.granted) await quietly('property', () => jira.setLeaseProperty(d.lease.issueKey, leaseProperty(d.lease)));
-  if (!d.granted) await quietly('event', () => store.logEvent({ type: 'denied', code: d.code, issueKey: l0?.issueKey, agent: l0?.agent, reasons: d.reasons, at: now }));
+  if (!d.granted && l0) await quietly('event', () => store.logEvent({ type: ['PATH_COLLISION', 'ISSUE_LEASED', 'HUMAN_WORKING', 'PROTECTED_PATH'].includes(d.code) ? 'denied' : 'heartbeat-refused', code: d.code, issueKey: l0.issueKey, agent: l0.agent, reasons: d.reasons, at: now }));
   return present(d);
 }
 
@@ -211,6 +214,7 @@ async function explainGone(d, leaseId, now) {
 }
 
 export async function releaseLease(input, { accountId }) {
+  if (!input?.leaseId) return NEEDS_LEASE_ID('release-work');
   const now = Date.now();
   const box = shard(await repoOfLease(input.leaseId));
   const board0 = await box.readBoard();
