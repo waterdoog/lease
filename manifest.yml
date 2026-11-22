@@ -237,6 +237,14 @@ modules:
       title: Lease — agent control tower
       icon: resource:icons;tower.svg
 
+  jira:projectSettingsPage:
+    - key: lease-project-settings
+      resource: project-settings
+      resolver:
+        function: resolver
+      render: native
+      title: Lease for agents
+
   # ---- Background
   scheduledTrigger:
     - key: lease-sweeper
@@ -277,6 +285,8 @@ resources:
     path: src/frontend/issue-panel.jsx
   - key: tower-page
     path: src/frontend/tower-page.jsx
+  - key: project-settings
+    path: src/frontend/project-settings.jsx
   - key: icons
     path: static/icons
 

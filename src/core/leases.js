@@ -23,12 +23,17 @@ export const DEFAULT_POLICY = Object.freeze({
   // they are granted with a note to keep changes additive and let git merge.
   sharedPaths: ['**/package.json', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock', '**/index.ts', '**/index.js', '**/*.d.ts', '**/CHANGELOG.md'],
   defaultRepo: '',
+  // After an agent hands off a pull request, keep its files reserved until the
+  // work item is Done (merged), so the next agent doesn't rebuild the conflict.
+  holdUntilMerged: true,
+  reviewHoldHours: 72,
 });
 
 // One record holds every active lease on the site (that is what makes grants
 // linearizable). Keep it far below the Custom Entity value limit.
 export const MAX_ACTIVE_PER_SITE = 150;
 export const PERSON = 'person';
+export const REVIEW = 'review';
 
 export function resolvePolicy(stored) {
   const p = { ...DEFAULT_POLICY, ...(stored || {}) };
@@ -45,6 +50,8 @@ export function resolvePolicy(stored) {
   p.personReserveHours = int(p.personReserveHours, 1, 24, DEFAULT_POLICY.personReserveHours);
   p.sharedPaths = parsePathList(p.sharedPaths || []).patterns;
   p.defaultRepo = p.defaultRepo ? normalizeRepo(p.defaultRepo) : '';
+  p.holdUntilMerged = p.holdUntilMerged !== false;
+  p.reviewHoldHours = int(p.reviewHoldHours, 1, 336, DEFAULT_POLICY.reviewHoldHours);
   return p;
 }
 
@@ -120,6 +127,16 @@ function collisionsWith(board, { repo, patterns, excludeId }, now, policy) {
   return hits;
 }
 
+// Tell the other holder too: they learn it on their next heartbeat.
+function alertSharers(next, hits, lease) {
+  for (const h of hits.shared || []) {
+    const other = next.leases[h.lease.id];
+    if (!other) continue;
+    const msg = `${describeHolder(lease)} also changes shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} for ${lease.issueKey}: keep your changes to them additive.`;
+    next.leases[other.id] = { ...other, alerts: [...(other.alerts || []), msg].slice(-5) };
+  }
+}
+
 function sharedNotes(hits) {
   return (hits.shared || []).map(
     (h) => `Shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} also in ${h.lease.issueKey} (${describeHolder(h.lease)}): keep your changes additive so git can merge them.`
@@ -140,6 +157,7 @@ function excludedFor(patterns, policy) {
 
 function describeHolder(l) {
   if (l.kind === PERSON) return `${l.ownerName || 'a person'} (a person, working by hand)`;
+  if (l.kind === REVIEW) return `${l.agent}'s change awaiting review${l.prUrl ? ` (${l.prUrl})` : ''}`;
   return `${l.agent}${l.ownerName ? ` (for ${l.ownerName})` : ''}`;
 }
 
@@ -191,9 +209,16 @@ export function claim(board0, req, ctx) {
       ])
     );
 
-  const existing = leaseForIssue(board, issue.key, now);
+  let existing = leaseForIssue(board, issue.key, now);
+  // The same person's agent comes back to address review comments: the review
+  // hold turns back into a working lease.
+  if (existing && existing.kind === REVIEW && existing.ownerAccountId === accountId) {
+    board.leases = { ...board.leases };
+    delete board.leases[existing.id];
+    existing = null;
+  }
   if (existing) {
-    if (existing.agent === agent && existing.ownerAccountId === accountId) {
+    if (existing.agent === agent && existing.ownerAccountId === accountId && !existing.kind) {
       return done({ granted: true, code: 'ALREADY_HELD', lease: existing, reasons: ['You already hold this lease; send heartbeats to keep it.'] });
     }
     return done(
@@ -207,7 +232,7 @@ export function claim(board0, req, ctx) {
   if (activeLeases(board, now).length >= MAX_ACTIVE_PER_SITE)
     return done(deny('SITE_FULL', [`This site already has ${MAX_ACTIVE_PER_SITE} active leases. Release finished work first.`]));
 
-  const mine = activeLeases(board, now).filter((l) => l.agent === agent && l.ownerAccountId === accountId);
+  const mine = activeLeases(board, now).filter((l) => !l.kind && l.agent === agent && l.ownerAccountId === accountId);
   if (mine.length >= policy.maxActivePerAgent)
     return done(
       deny('AGENT_BUSY', [
@@ -242,6 +267,7 @@ export function claim(board0, req, ctx) {
           suggestions: [
             'Narrow your paths to files the other lease does not cover, or',
             `pick other work (find-work), or retry after ${fmtTime(retryAfter)}.`,
+            ...hits.filter((h) => h.lease.kind === REVIEW && h.lease.prUrl).map((h) => `Or build on top of ${h.lease.prUrl} (branch from it) once its author agrees.`),
           ],
         }
       )
@@ -267,6 +293,7 @@ export function claim(board0, req, ctx) {
   };
   const next = clone(board);
   next.leases[lease.id] = lease;
+  alertSharers(next, hits, lease);
   return { board: next, expired, decision: { granted: true, code: 'GRANTED', lease, reasons: sharedNotes(hits) } };
 }
 
@@ -322,12 +349,15 @@ export function reserve(board0, req, ctx) {
   };
   const next = clone(board);
   next.leases[lease.id] = lease;
+  alertSharers(next, hits, lease);
   return done({ granted: true, code: existing ? 'RESERVATION_UPDATED' : 'RESERVED', lease, reasons: sharedNotes(hits) }, next);
 }
 
 function ownLease(board, leaseId, accountId, now) {
   const l = board.leases[leaseId];
   if (!l || l.expiresAt <= now) return { error: deny('LEASE_GONE', [`Lease ${leaseId} is not active (it expired, was released or was revoked). Claim the work again.`]) };
+  if (l.kind === REVIEW)
+    return { error: deny('LEASE_GONE', [`You already released ${l.issueKey}; its files stay reserved while the pull request awaits review. Claim it again to address review comments.`]) };
   if (l.ownerAccountId !== accountId)
     return { error: deny('NOT_YOURS', [`Lease ${leaseId} belongs to ${describeHolder(l)}.`]) };
   return { lease: l };
@@ -374,10 +404,11 @@ export function heartbeat(board0, req, ctx) {
       ? Math.min(policy.personReserveHours * 60, Math.max(5, +req.extendMinutes || policy.personReserveHours * 60)) * MIN
       : ttlMs(req.extendMinutes, policy);
   const notes = req.note ? [...lease.notes, { at: now, text: String(req.note).slice(0, 500) }].slice(-20) : lease.notes;
-  const updated = { ...lease, paths, excluded: excludedFor(paths, policy), notes, heartbeatAt: now, expiresAt: Math.max(lease.expiresAt, now + extendMs) };
+  const alerts = lease.alerts || [];
+  const updated = { ...lease, paths, excluded: excludedFor(paths, policy), notes, alerts: [], heartbeatAt: now, expiresAt: Math.max(lease.expiresAt, now + extendMs) };
   const next = clone(board);
   next.leases[lease.id] = updated;
-  return done({ granted: true, code: 'RENEWED', lease: updated }, next);
+  return done({ granted: true, code: 'RENEWED', lease: updated, reasons: alerts }, next);
 }
 
 export const OUTCOMES = ['done', 'handed-back', 'blocked', 'abandoned'];
@@ -388,6 +419,7 @@ export function release(board0, req, ctx) {
   const { lease, error } = ownLease(board, req.leaseId, accountId, now);
   if (error) return { board, expired, decision: error };
   const outcome = OUTCOMES.includes(req.outcome) ? req.outcome : 'done';
+  const policy = resolvePolicy(ctx.policy);
   const next = clone(board);
   delete next.leases[lease.id];
   const record = {
@@ -396,8 +428,25 @@ export function release(board0, req, ctx) {
     outcome,
     prUrl: req.prUrl ? String(req.prUrl).slice(0, 500) : null,
     summaryOfWork: String(req.summary || '').slice(0, 2000),
-    scopeCheck: req.changedFiles ? checkScope(lease, req.changedFiles, resolvePolicy(ctx.policy)) : null,
+    scopeCheck: req.changedFiles ? checkScope(lease, req.changedFiles, policy) : null,
   };
+  if (outcome === 'done' && record.prUrl && policy.holdUntilMerged) {
+    // Hold what the pull request changed (or the whole lease if unknown) until
+    // the work item is Done. No heartbeats needed; it ends on Done, when a
+    // person frees it, or after reviewHoldHours.
+    const changed = record.scopeCheck ? parsePathList(req.changedFiles).patterns.filter((f) => lease.paths.some((p) => pathMatches(p, f))) : [];
+    const hold = {
+      ...lease,
+      kind: REVIEW,
+      paths: changed.length ? changed.slice(0, 200) : lease.paths,
+      prUrl: record.prUrl,
+      heartbeatAt: now,
+      expiresAt: now + policy.reviewHoldHours * 60 * MIN,
+      alerts: [],
+    };
+    next.leases[lease.id] = hold;
+    record.heldForReview = { paths: hold.paths, until: hold.expiresAt };
+  }
   return { board: next, expired, decision: { granted: true, code: 'RELEASED', lease: record } };
 }
 
@@ -468,12 +517,13 @@ export function whoHolds(board, { paths, repo }, now, rawPolicy) {
 export function publicLease(l) {
   return {
     leaseId: l.id,
-    kind: l.kind === PERSON ? PERSON : 'agent',
+    kind: l.kind === PERSON ? PERSON : l.kind === REVIEW ? REVIEW : 'agent',
     issueKey: l.issueKey,
     summary: l.summary,
     agent: l.agent,
     owner: l.ownerName || null,
     ownerAccountId: l.ownerAccountId || null,
+    prUrl: l.prUrl || null,
     repo: l.repo,
     paths: l.paths,
     mustNotTouch: l.excluded || [],

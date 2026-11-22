@@ -21,6 +21,7 @@ import ForgeReconciler, {
   Textfield,
   Toggle,
   Label,
+  Link,
   useProductContext,
   xcss,
 } from '@forge/react';
@@ -73,6 +74,31 @@ function LeaseCard({ lease, now, mine, onRevoke, onRelease }) {
   const total = Math.max(1, exp - Date.parse(lease.lastHeartbeat));
   const left = Math.max(0, exp - now);
   const person = lease.kind === 'person';
+  const review = lease.kind === 'review';
+  if (review)
+    return (
+      <Box xcss={card}>
+        <Stack space="space.100">
+          <Inline space="space.100" alignBlock="center">
+            <Lozenge appearance="moved" isBold>
+              Awaiting merge
+            </Lozenge>
+            <Text>
+              <Strong>{lease.agent}</Strong>
+              {lease.owner ? ` for ${lease.owner}` : ''} handed off a pull request
+            </Text>
+          </Inline>
+          {lease.prUrl ? <Link href={lease.prUrl} openNewTab>{lease.prUrl}</Link> : null}
+          <Text>
+            These files stay reserved until this work item is Done (or {until(exp, now)}), so other agents don't build conflicting changes.
+          </Text>
+          <Paths lease={lease} />
+          <Inline>
+            <Button onClick={onRevoke}>Free these paths now</Button>
+          </Inline>
+        </Stack>
+      </Box>
+    );
   return (
     <Box xcss={card}>
       <Stack space="space.100">
@@ -283,11 +309,15 @@ function App() {
         {revokeOpen ? (
           <Modal onClose={() => setRevokeOpen(false)}>
             <ModalHeader>
-              <ModalTitle appearance="warning">Take this work item back from {lease?.agent}?</ModalTitle>
+              <ModalTitle appearance="warning">{lease?.kind === 'review' ? 'Free the files reserved for this pull request?' : `Take this work item back from ${lease?.agent}?`}</ModalTitle>
             </ModalHeader>
             <ModalBody>
               <Stack space="space.100">
-                <Text>The lease ends now and its paths are free. The agent is told to stop on its next heartbeat; until then it may still be editing on its own machine.</Text>
+                <Text>
+                  {lease?.kind === 'review'
+                    ? 'Other agents may then change these files while the pull request is still open.'
+                    : 'The lease ends now and its paths are free. The agent is told to stop on its next heartbeat; until then it may still be editing on its own machine.'}
+                </Text>
                 <Label labelFor="reason">Reason (posted on the work item and sent to the agent)</Label>
                 <Textfield id="reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="I'll take this one myself" />
               </Stack>

@@ -256,7 +256,22 @@ test('app info gives the MCP URL for this installation', async () => {
 
 test('released work keeps its paths on the issue property for CI', async () => {
   const p = jira.props['APP-102'];
-  assert.equal(p.state, 'released');
+  assert.equal(p.state, 'awaiting-merge');
+  assert.equal(p.held, true);
   assert.deepEqual(p.paths, ['src/auth/session.ts']);
   assert.equal(p.prUrl, 'https://github.com/acme/web/pull/88');
+});
+
+test('a PR awaiting review keeps its files until the work item is Done', async () => {
+  issue('APP-130', 'Session cookie flags');
+  const r = await app.claimWork({ issueKey: 'APP-130', agent: 'cursor', paths: 'src/auth/session.ts', repo: 'acme/web' }, as('sam'));
+  assert.equal(r.result, 'PATH_COLLISION', 'APP-102 PR still awaiting review');
+  assert.match(r.reasons[0], /awaiting review \(https:\/\/github.com\/acme\/web\/pull\/88\)/);
+  assert.match(jira.comments['APP-102'].at(-1).text, /keeps src\/auth\/session.ts reserved for this pull request/);
+  Object.assign(jira.issues['APP-102'], { status: 'Done', cat: 'done' });
+  await app.onIssueUpdated({ issue: { key: 'APP-102' } });
+  const again = await app.claimWork({ issueKey: 'APP-130', agent: 'cursor', paths: 'src/auth/session.ts', repo: 'acme/web' }, as('sam'));
+  assert.equal(again.granted, true, JSON.stringify(again));
+  const rep = await app.agentReport({ hours: 24 }, as('yu'));
+  assert.ok(Array.isArray(rep.awaitingMerge));
 });

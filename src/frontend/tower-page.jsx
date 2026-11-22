@@ -26,6 +26,7 @@ import ForgeReconciler, {
 } from '@forge/react';
 import { invoke, router } from '@forge/bridge';
 import { ago, until } from './format';
+import { PolicyEditor } from './policy-editor';
 
 const REPO_URL = 'https://github.com/waterdoog/lease';
 
@@ -69,7 +70,7 @@ function LiveTable({ leases, now }) {
           key: l.leaseId,
           cells: [
             { key: 'issue', content: <Stack space="space.0">{issueLink(l.issueKey)}<Text>{l.summary}</Text></Stack> },
-            { key: 'agent', content: l.kind === 'person' ? <Stack space="space.0"><Strong>{l.owner}</Strong><Lozenge appearance="new">person, by hand</Lozenge></Stack> : <Stack space="space.0"><Strong>{l.agent}</Strong><Text>{l.owner ? `for ${l.owner}` : ''}</Text></Stack> },
+            { key: 'agent', content: l.kind === 'review' ? <Stack space="space.0"><Strong>{l.agent}</Strong><Lozenge appearance="moved">awaiting merge</Lozenge></Stack> : l.kind === 'person' ? <Stack space="space.0"><Strong>{l.owner}</Strong><Lozenge appearance="new">person, by hand</Lozenge></Stack> : <Stack space="space.0"><Strong>{l.agent}</Strong><Text>{l.owner ? `for ${l.owner}` : ''}</Text></Stack> },
             { key: 'paths', content: <Inline space="space.050" shouldWrap>{l.paths.map((p) => <Code key={p}>{p}</Code>)}</Inline> },
             { key: 'hb', content: <Lozenge appearance={stale ? 'moved' : 'success'}>{ago(hb, now)}</Lozenge> },
             { key: 'exp', content: <Text>{until(Date.parse(l.expiresAt), now)}</Text> },
@@ -98,6 +99,7 @@ function ReportView({ report }) {
       ) : null}
       <Stack space="space.100">
         <Heading size="small">Finished by agents</Heading>
+        {report.awaitingMerge.length ? <Text>{report.awaitingMerge.length} pull request(s) awaiting merge keep their files reserved: {report.awaitingMerge.map((l) => l.issueKey).join(', ')}.</Text> : null}
         {report.finishedWork.length ? (
           <DynamicTable
             head={{ cells: [{ key: 'i', content: 'Work item' }, { key: 'a', content: 'Agent' }, { key: 'o', content: 'Outcome' }, { key: 'w', content: 'What it did' }, { key: 'p', content: 'PR' }] }}
@@ -127,81 +129,6 @@ function ReportView({ report }) {
           </Text>
         ))}
       </Stack>
-    </Stack>
-  );
-}
-
-function PolicyEditor() {
-  const [projectKey, setProjectKey] = useState('');
-  const [policy, setPolicy] = useState(null);
-  const [msg, setMsg] = useState(null);
-  const load = async () => {
-    if (!projectKey.trim()) return;
-    setMsg(null);
-    setPolicy(await invoke('getPolicy', { projectKey: projectKey.trim() }));
-  };
-  const save = async () => {
-    const r = await invoke('savePolicy', { projectKey: projectKey.trim(), policy });
-    setMsg(r.ok ? { ok: true, text: 'Saved. New claims follow this policy.' } : { ok: false, text: r.reasons.join(' ') });
-    if (r.ok) setPolicy(r.policy);
-  };
-  const set = (k) => (e) => setPolicy({ ...policy, [k]: e.target.value });
-  return (
-    <Stack space="space.200">
-      <Text>Each project decides what agents may take. Only project administrators can save.</Text>
-      <Inline space="space.100" alignBlock="end">
-        <Stack space="space.050">
-          <Label labelFor="pk">Project key</Label>
-          <Textfield id="pk" value={projectKey} onChange={(e) => setProjectKey(e.target.value.toUpperCase())} placeholder="APP" />
-        </Stack>
-        <Button onClick={load}>Load policy</Button>
-      </Inline>
-      {policy ? (
-        <Stack space="space.150">
-          <Inline space="space.200" shouldWrap>
-            <Stack space="space.050">
-              <Label labelFor="label">Label that marks work safe for agents</Label>
-              <Textfield id="label" value={policy.agentLabel} onChange={set('agentLabel')} />
-            </Stack>
-            <Stack space="space.050">
-              <Label labelFor="max">Leases per agent at once</Label>
-              <Textfield id="max" type="number" value={String(policy.maxActivePerAgent)} onChange={set('maxActivePerAgent')} />
-            </Stack>
-            <Stack space="space.050">
-              <Label labelFor="ttl">Lease minutes without heartbeat</Label>
-              <Textfield id="ttl" type="number" value={String(policy.defaultTtlMinutes)} onChange={set('defaultTtlMinutes')} />
-            </Stack>
-            <Stack space="space.050">
-              <Label labelFor="repo">Default repository</Label>
-              <Textfield id="repo" value={policy.defaultRepo || ''} onChange={set('defaultRepo')} placeholder="acme/web" />
-            </Stack>
-            <Stack space="space.050">
-              <Label labelFor="maxttl">Longest lease (minutes)</Label>
-              <Textfield id="maxttl" type="number" value={String(policy.maxTtlMinutes)} onChange={set('maxTtlMinutes')} />
-            </Stack>
-          </Inline>
-          <Stack space="space.050">
-            <Label labelFor="prot">Protected paths: only people may change these (one per line)</Label>
-            <TextArea id="prot" value={(policy.protectedPaths || []).join('\n')} onChange={(e) => setPolicy({ ...policy, protectedPaths: e.target.value.split('\n') })} />
-          </Stack>
-          <Stack space="space.050">
-            <Label labelFor="shared">Shared files: claims on these never block each other (one per line)</Label>
-            <TextArea id="shared" value={(policy.sharedPaths || []).join('\n')} onChange={(e) => setPolicy({ ...policy, sharedPaths: e.target.value.split('\n') })} />
-          </Stack>
-          <Inline space="space.100" alignBlock="center">
-            <Toggle id="req" isChecked={policy.requireLabel} onChange={() => setPolicy({ ...policy, requireLabel: !policy.requireLabel })} />
-            <Label labelFor="req">Agents may only take work items with the label</Label>
-          </Inline>
-          <Inline space="space.100" alignBlock="center">
-            <Toggle id="hum" isChecked={policy.respectHumanInProgress} onChange={() => setPolicy({ ...policy, respectHumanInProgress: !policy.respectHumanInProgress })} />
-            <Label labelFor="hum">Refuse agents when a person has the work item in progress</Label>
-          </Inline>
-          <Inline>
-            <Button appearance="primary" onClick={save}>Save policy</Button>
-          </Inline>
-          {msg ? <SectionMessage appearance={msg.ok ? 'success' : 'error'}><Text>{msg.text}</Text></SectionMessage> : null}
-        </Stack>
-      ) : null}
     </Stack>
   );
 }
@@ -295,17 +222,20 @@ function TryIt() {
 function App() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [project, setProject] = useState('');
   const load = useCallback(async () => {
     try {
-      setData({ ...(await invoke('tower', { hours: 24 })), now: Date.now() });
+      setData({ ...(await invoke('tower', { hours: 24, projectKey: project.trim() || undefined })), now: Date.now() });
       setError(null);
     } catch (e) {
       setError(e.message || String(e));
     }
-  }, []);
+  }, [project]);
   useEffect(() => {
     load();
-    const t = setInterval(load, 10000);
+    const t = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') load();
+    }, 15000);
     return () => clearInterval(t);
   }, [load]);
 
@@ -316,10 +246,17 @@ function App() {
     <Stack space="space.300">
       <Stack space="space.050">
         <Heading size="large">Agent control tower</Heading>
-        <Text>Every AI coding agent working in this site claims its Jira work here first. Live, refreshed every 10 seconds.</Text>
+        <Text>Every AI coding agent working in this site claims its Jira work here first. Live, refreshed every 15 seconds.</Text>
+        <Inline space="space.100" alignBlock="end">
+          <Stack space="space.050">
+            <Label labelFor="pf">Project</Label>
+            <Textfield id="pf" value={project} onChange={(e) => setProject(e.target.value.toUpperCase())} placeholder="All projects" />
+          </Stack>
+        </Inline>
       </Stack>
       <Inline space="space.200" shouldWrap>
         <Stat label="Agents at work" value={data.count} />
+        <Stat label="Awaiting merge" value={data.report.awaitingMerge.length} />
         <Stat label="Collisions prevented, 24 h" value={t.collisionsPrevented + t.humanWorkProtected} tone={t.collisionsPrevented + t.humanWorkProtected ? { appearance: 'success', text: 'nobody overwrote anybody' } : null} />
         <Stat label="Finished, 24 h" value={t.finished} />
         <Stat label="Needs a person" value={data.report.needsAPerson.length} tone={data.report.needsAPerson.length ? { appearance: 'moved', text: 'see Last 24 hours' } : null} />
@@ -328,7 +265,7 @@ function App() {
         <TabList>
           <Tab>Live</Tab>
           <Tab>Last 24 hours</Tab>
-          <Tab>Policy</Tab>
+          <Tab>Policies</Tab>
           <Tab>Connect & try</Tab>
         </TabList>
         <TabPanel>
@@ -343,7 +280,7 @@ function App() {
         </TabPanel>
         <TabPanel>
           <Box xcss={xcss({ paddingTop: 'space.200', width: '100%' })}>
-            <PolicyEditor />
+            <PolicyEditor projectKey={project.trim()} />
           </Box>
         </TabPanel>
         <TabPanel>

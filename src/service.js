@@ -27,6 +27,16 @@ async function afterExpired(expired, now) {
     await quietly('history', () => store.saveHistory({ ...l, endedAt: now, outcome: 'expired' }));
     await quietly('event', () => store.logEvent({ type: 'expired', issueKey: l.issueKey, agent: l.agent, owner: l.ownerName, at: now }));
     await quietly('property', () => jira.setLeaseProperty(l.issueKey, leaseProperty({ ...l, endedAt: now, outcome: 'expired' }, 'expired')));
+    if (l.kind === core.REVIEW || l.kind === core.PERSON) {
+      await quietly('comment', () =>
+        jira.comment(l.issueKey, [
+          l.kind === core.REVIEW
+            ? `Lease: the review hold on ${l.paths.join(', ')} ended without this work item reaching Done; other agents may change these files again.`
+            : `Lease: ${l.ownerName || 'the'} reservation on ${l.paths.join(', ')} ended.`,
+        ])
+      );
+      continue;
+    }
     await quietly('comment', () =>
       jira.comment(l.issueKey, [
         [{ text: 'Lease expired. ', strong: true }, `${l.agent}${l.ownerName ? ` (for ${l.ownerName})` : ''} stopped sending heartbeats, so this work item is back in the queue for people and agents.`],
@@ -168,7 +178,9 @@ export async function releaseLease(input, { accountId }) {
     const l = d.lease;
     await quietly('history', () => store.saveHistory(l));
     await quietly('event', () => store.logEvent({ type: 'released', outcome: l.outcome, issueKey: l.issueKey, agent: l.agent, owner: l.ownerName, prUrl: l.prUrl, scopeClean: l.scopeCheck ? l.scopeCheck.clean : null, at: now }));
-    await quietly('property', () => jira.setLeaseProperty(l.issueKey, leaseProperty(l, 'released')));
+    await quietly('property', () =>
+      jira.setLeaseProperty(l.issueKey, l.heldForReview ? { ...leaseProperty({ ...l, paths: l.heldForReview.paths, expiresAt: l.heldForReview.until }, 'awaiting-merge'), held: true } : leaseProperty(l, 'released'))
+    );
     const mins = Math.max(1, Math.round((l.endedAt - l.createdAt) / 60000));
     await quietly('comment', () =>
       jira.comment(l.issueKey, [
@@ -187,6 +199,9 @@ export async function releaseLease(input, { accountId }) {
               ]
           : null,
         l.outcome === 'done' ? 'A person should review the change before this work item is closed.' : null,
+        l.heldForReview
+          ? `Until this work item is Done, Lease keeps ${l.heldForReview.paths.join(', ')} reserved for this pull request (at most until ${core.fmtTime(l.heldForReview.until)}), so other agents don't build conflicting changes.`
+          : null,
       ].filter(Boolean))
     );
   }
@@ -206,7 +221,7 @@ export async function revokeLease(input, { accountId }) {
   if (d.granted) {
     await quietly('history', () => store.saveHistory(d.lease));
     await quietly('event', () => store.logEvent({ type: 'revoked', issueKey: d.lease.issueKey, agent: d.lease.agent, by: me.displayName, at: now }));
-    if (d.lease.kind !== core.PERSON)
+    if (!d.lease.kind)
       await quietly('tombstone', () =>
         kvs.set(`revoked:${d.lease.id}`, { leaseId: d.lease.id, issueKey: d.lease.issueKey, agent: d.lease.agent, byName: me.displayName, reason: d.lease.reason, at: now }, { ttl: { unit: 'DAYS', value: 2 } })
       );
@@ -244,6 +259,8 @@ export async function pendingStops(issueKey) {
 
 // Try Lease without connecting an agent: two simulated agents, working for the
 // person who clicks, go through the real claim/heartbeat code on sample work.
+const SIM_REPO = 'lease-demo/sample-app';
+
 export async function simulateAgents(projectKey, { accountId }) {
   const pk = String(projectKey || '').trim().toUpperCase();
   const found = await findWork({ projectKey: pk, limit: 25 });
@@ -254,13 +271,13 @@ export async function simulateAgents(projectKey, { accountId }) {
   if (!a || !b || !c) return { ok: false, reasons: [`Need three work items open to agents in ${pk}. Add sample work items first.`] };
   const steps = [];
   const log = (who, what, r) => steps.push({ who, what, granted: r.granted, result: r.result, says: (r.reasons || [])[0] || (r.lease ? `lease ${r.lease.leaseId} until ${r.lease.expiresAt}` : '') });
-  const r1 = await claimWork({ issueKey: a.issueKey, agent: 'sim-claude', repo: 'acme/web', paths: 'src/auth/**, tests/auth/**', intent: 'Rate limit on /login (simulated agent)' }, { accountId });
+  const r1 = await claimWork({ issueKey: a.issueKey, agent: 'sim-claude', repo: SIM_REPO, paths: 'src/auth/**, tests/auth/**', intent: 'Rate limit on /login (simulated agent)' }, { accountId });
   log('sim-claude', `claims ${a.issueKey} for src/auth/**`, r1);
   if (r1.granted) log('sim-claude', 'sends a heartbeat', await heartbeatLease({ leaseId: r1.lease.leaseId, note: 'Limiter middleware drafted (simulated)' }, { accountId }));
-  log('sim-codex', `claims ${b.issueKey} for src/auth/session.ts`, await claimWork({ issueKey: b.issueKey, agent: 'sim-codex', repo: 'acme/web', paths: 'src/auth/session.ts', intent: 'Rotate refresh tokens (simulated agent)' }, { accountId }));
-  log('sim-codex', `claims ${c.issueKey} for src/billing/** instead`, await claimWork({ issueKey: c.issueKey, agent: 'sim-codex', repo: 'acme/web', paths: 'src/billing/**', intent: 'Fix invoice rounding (simulated agent)' }, { accountId }));
+  log('sim-codex', `claims ${b.issueKey} for src/auth/session.ts`, await claimWork({ issueKey: b.issueKey, agent: 'sim-codex', repo: SIM_REPO, paths: 'src/auth/session.ts', intent: 'Rotate refresh tokens (simulated agent)' }, { accountId }));
+  log('sim-codex', `claims ${c.issueKey} for src/billing/** instead`, await claimWork({ issueKey: c.issueKey, agent: 'sim-codex', repo: SIM_REPO, paths: 'src/billing/**', intent: 'Fix invoice rounding (simulated agent)' }, { accountId }));
   const d = pick(/rename|column|migration/i) || found.available.find((x) => ![a, b, c].includes(x));
-  if (d) log('sim-cursor', `would claim ${d.issueKey} for db/migrations/0042.sql (checked, not taken)`, await dryRunClaim({ issueKey: d.issueKey, agent: 'sim-cursor', repo: 'acme/web', paths: 'db/migrations/0042.sql' }, { accountId }));
+  if (d) log('sim-cursor', `would claim ${d.issueKey} for db/migrations/0042.sql (checked, not taken)`, await dryRunClaim({ issueKey: d.issueKey, agent: 'sim-cursor', repo: SIM_REPO, paths: 'db/migrations/0042.sql' }, { accountId }));
   return { ok: true, steps };
 }
 
@@ -311,7 +328,7 @@ export async function status({ issueKey, projectKey } = {}) {
   let leases = core.activeLeases(board, now);
   if (issueKey) leases = leases.filter((l) => l.issueKey === jira.cleanKey(issueKey));
   else if (projectKey) leases = leases.filter((l) => l.projectKey === String(projectKey).toUpperCase());
-  return { activeLeases: leases.map(core.publicLease), count: leases.length, at: core.fmtTime(now) };
+  return { activeLeases: leases.map(core.publicLease), count: leases.filter((l) => !l.kind).length, at: core.fmtTime(now) };
 }
 
 export async function report({ hours = 12, projectKey } = {}) {
@@ -353,7 +370,9 @@ export async function report({ hours = 12, projectKey } = {}) {
     needsAPerson: finished
       .filter((h) => ['blocked', 'handed-back', 'expired'].includes(h.outcome))
       .map((h) => ({ issueKey: h.issueKey, outcome: h.outcome, lastNote: h.summaryOfWork || h.notes?.[h.notes.length - 1]?.text || '' })),
-    stillRunning: core.activeLeases(board, now).filter((l) => inProject(l.issueKey)).map(core.publicLease),
+    stillRunning: core.activeLeases(board, now).filter((l) => inProject(l.issueKey) && !l.kind).map(core.publicLease),
+    awaitingMerge: core.activeLeases(board, now).filter((l) => inProject(l.issueKey) && l.kind === core.REVIEW).map(core.publicLease),
+    reservedByPeople: core.activeLeases(board, now).filter((l) => inProject(l.issueKey) && l.kind === core.PERSON).map(core.publicLease),
     recentDenials: ev.filter((e) => e.type === 'denied').slice(0, 15).map((e) => ({ at: core.fmtTime(e.at), issueKey: e.issueKey, agent: e.agent, code: e.code, why: e.reasons?.[0] })),
   };
 }
@@ -409,7 +428,7 @@ export async function onIssueChanged(issueKey) {
     return 'released';
   }
   const humanStarted =
-    issue.statusCategory === 'indeterminate' && issue.assigneeAccountId && issue.assigneeAccountId !== lease.ownerAccountId;
+    !lease.kind && issue.statusCategory === 'indeterminate' && issue.assigneeAccountId && issue.assigneeAccountId !== lease.ownerAccountId;
   if (humanStarted && !lease.humanOverlapNotified) {
     await store.update((b) => ({ board: core.markHumanOverlap(b, lease.id) }));
     await quietly('event', () => store.logEvent({ type: 'human-overlap', issueKey, agent: lease.agent, owner: issue.assigneeName, at: now }));
@@ -431,6 +450,9 @@ export function present(d) {
     if (d.code === 'GRANTED' || d.code === 'ALREADY_HELD')
       out.next = `Work only inside the leased paths. Call heartbeat with leaseId ${d.lease.id} at least every 10 minutes, and release it with the pull request link when done.`;
     if (d.code === 'RELEASED' || d.code === 'REVOKED') out.lease = { ...core.publicLease(d.lease), outcome: d.lease.outcome, prUrl: d.lease.prUrl || null };
+    if (d.lease.heldForReview)
+      out.next = `Released. Your changed files stay reserved for this pull request until the work item is Done. To address review comments later, claim ${d.lease.issueKey} again.`;
+    if (d.lease.scopeCheck) out.scopeCheck = d.lease.scopeCheck;
     return out;
   }
   return {

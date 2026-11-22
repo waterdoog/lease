@@ -128,7 +128,11 @@ test('release and revoke end the lease and keep a record', () => {
   const r = L.release(a.board, { leaseId: id, outcome: 'done', prUrl: 'https://x/pr/1', summary: 'fixed' }, ctx({ now: T0 + 5 * MIN }));
   assert.equal(r.decision.code, 'RELEASED');
   assert.equal(r.decision.lease.outcome, 'done');
-  assert.equal(Object.keys(r.board.leases).length, 0);
+  // a done PR keeps its files reserved for review (here: the one changed file is unknown, so the lease paths)
+  assert.equal(Object.values(r.board.leases)[0].kind, 'review');
+  const noHold = L.release(a.board, { leaseId: id, outcome: 'done', prUrl: 'https://x/pr/1' }, ctx({ now: T0 + 5 * MIN, policy: { holdUntilMerged: false } }));
+  assert.equal(Object.keys(noHold.board.leases).length, 0);
+  assert.equal(Object.keys(L.release(a.board, { leaseId: id, outcome: 'blocked' }, ctx()).board.leases).length, 0);
   const v = L.revoke(a.board, { leaseId: id, reason: 'mine' }, ctx({ accountId: 'mei', actorName: 'Mei' }));
   assert.equal(v.decision.lease.outcome, 'revoked');
   assert.equal(v.decision.lease.revokedByName, 'Mei');
@@ -277,4 +281,40 @@ test('project default repository is used when an agent omits it', () => {
   const a = claimOn(L.emptyBoard(), 'APP-1', 'src/auth', { policy: pol });
   assert.equal(a.decision.lease.repo, 'acme/web');
   assert.equal(claimOn(a.board, 'APP-2', 'src/auth/x.ts', { agent: 'codex', repo: 'acme/web', policy: pol }).decision.code, 'PATH_COLLISION');
+});
+
+test('done work with a PR keeps its changed files reserved until merged', () => {
+  const a = claimOn(L.emptyBoard(), 'APP-1', 'src/auth', { repo: 'acme/web' });
+  const id = a.decision.lease.id;
+  const r = L.release(a.board, { leaseId: id, outcome: 'done', prUrl: 'https://github.com/acme/web/pull/88', changedFiles: 'src/auth/login.ts, src/auth/limit.ts' }, ctx({ now: T0 + 10 * MIN }));
+  assert.deepEqual(r.decision.lease.heldForReview.paths, ['src/auth/login.ts', 'src/auth/limit.ts']);
+  const hold = Object.values(r.board.leases)[0];
+  assert.equal(hold.expiresAt, T0 + 10 * MIN + 72 * 60 * MIN);
+  // another agent: the changed file is reserved, the rest of the folder is free
+  const b = claimOn(r.board, 'APP-2', 'src/auth/login.ts', { agent: 'codex', accountId: 'mei', repo: 'acme/web', now: T0 + 11 * MIN });
+  assert.equal(b.decision.code, 'PATH_COLLISION');
+  assert.match(b.decision.reasons[0], /awaiting review \(https:\/\/github.com\/acme\/web\/pull\/88\)/);
+  assert.ok(b.decision.suggestions.some((x) => /build on top of/.test(x)));
+  assert.equal(claimOn(r.board, 'APP-2', 'src/auth/session.ts', { agent: 'codex', accountId: 'mei', repo: 'acme/web', now: T0 + 11 * MIN }).decision.code, 'GRANTED');
+  // the old lease id is gone for heartbeats
+  assert.equal(L.heartbeat(r.board, { leaseId: id }, ctx({ now: T0 + 12 * MIN })).decision.code, 'LEASE_GONE');
+  // the same person's agent can come back for review comments
+  const back = claimOn(r.board, 'APP-1', 'src/auth', { repo: 'acme/web', now: T0 + 60 * MIN });
+  assert.equal(back.decision.code, 'GRANTED');
+  assert.equal(Object.values(back.board.leases).filter((l) => l.issueKey === 'APP-1').length, 1);
+  // review holds do not count against the agent's concurrency limit
+  let bb = r.board;
+  bb = claimOn(bb, 'APP-5', 'x', { repo: 'acme/web' }).board;
+  assert.equal(claimOn(bb, 'APP-6', 'y', { repo: 'acme/web' }).decision.code, 'GRANTED');
+  // closing the work item ends the hold
+  assert.equal(L.releaseIssue(r.board, 'APP-1', { now: T0 + 2 * 60 * MIN }).ended.length, 1);
+});
+
+test('holders of a shared file hear about the other change on their next heartbeat', () => {
+  const a = claimOn(L.emptyBoard(), 'APP-1', 'src/auth/**, package.json', { repo: 'acme/web' });
+  const b = claimOn(a.board, 'APP-2', 'src/ui, package.json', { agent: 'codex', accountId: 'mei', ownerName: 'Mei', repo: 'acme/web' });
+  const hb = L.heartbeat(b.board, { leaseId: a.decision.lease.id }, ctx({ now: T0 + MIN }));
+  assert.match(hb.decision.reasons[0], /codex \(for Mei\) also changes shared file\(s\) "package.json" for APP-2/);
+  const hb2 = L.heartbeat(hb.board, { leaseId: a.decision.lease.id }, ctx({ now: T0 + 2 * MIN }));
+  assert.equal(hb2.decision.reasons.length, 0, 'told once');
 });
