@@ -152,3 +152,20 @@ export async function createIssue(projectKey, { summary, description, labels }) 
   });
   return (await json(res, 'Creating the work item')).key;
 }
+
+// Which of these work items can the current person see? (bulkfetch reports
+// the ones they cannot as errors instead of failing.)
+export async function visibleKeys(keys) {
+  const unique = [...new Set(keys.map(cleanKey))].filter(isIssueKey);
+  const seen = new Set();
+  for (let i = 0; i < unique.length; i += 100) {
+    const res = await asUser().requestJira(route`/rest/api/3/issue/bulkfetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ issueIdsOrKeys: unique.slice(i, i + 100), fields: ['summary'] }),
+    });
+    const d = await json(res, 'Checking visibility');
+    for (const it of d.issues || []) seen.add(it.key);
+  }
+  return seen;
+}

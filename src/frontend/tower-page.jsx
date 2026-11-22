@@ -44,7 +44,7 @@ function Stat({ label, value, tone }) {
   );
 }
 
-const issueLink = (key) => (
+const issueLink = (key) => key === '(hidden)' ? <Text>(a work item you cannot see)</Text> : (
   <Button appearance="link" spacing="none" onClick={() => router.navigate(`/browse/${key}`)}>
     {key}
   </Button>

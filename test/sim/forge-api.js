@@ -31,6 +31,14 @@ function handle(who, path, opts = {}) {
     const id = jiraState.currentUser;
     return res(200, { accountId: id, displayName: jiraState.users[id] });
   }
+  if (path === '/rest/api/3/issue/bulkfetch') {
+    const hidden = jiraState.hiddenFrom?.[jiraState.currentUser] || new Set();
+    const keys = body.issueIdsOrKeys;
+    return res(200, {
+      issues: keys.filter((k) => jiraState.issues[k] && !(who === 'user' && hidden.has(k))).map((k) => ({ key: k, fields: { summary: jiraState.issues[k].summary } })),
+      issueErrors: keys.filter((k) => !jiraState.issues[k] || (who === 'user' && hidden.has(k))).map((k) => ({ issueIdOrKey: k })),
+    });
+  }
   if ((m = path.match(/^\/rest\/api\/3\/issue\/createmeta\/([^/]+)\/issuetypes/))) {
     return res(200, { issueTypes: [{ id: '10001', name: 'Sub-task', subtask: true }, { id: '10002', name: 'Task', subtask: false }] });
   }

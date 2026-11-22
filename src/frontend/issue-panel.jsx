@@ -38,7 +38,7 @@ function useClock(serverNow) {
     if (serverNow) skew.current = serverNow - Date.now();
   }, [serverNow]);
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now() + skew.current), 1000);
+    const t = setInterval(() => setNow(Date.now() + skew.current), 10000);
     return () => clearInterval(t);
   }, []);
   return now;

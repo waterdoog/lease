@@ -275,3 +275,28 @@ test('a PR awaiting review keeps its files until the work item is Done', async (
   const rep = await app.agentReport({ hours: 24 }, as('yu'));
   assert.ok(Array.isArray(rep.awaitingMerge));
 });
+
+test('people and their agents never learn about work items they cannot see', async () => {
+  issue('SEC-1', 'Rotate the signing keys after the incident');
+  jira.hiddenFrom = { mei: new Set(['SEC-1']) };
+  const c = await app.claimWork({ issueKey: 'SEC-1', agent: 'claude-code', paths: 'src/crypto', repo: 'acme/web', intent: 'Rotate keys (confidential)' }, as('yu'));
+  assert.equal(c.granted, true);
+  // Mei's agent collides: it learns the paths are taken, not by what
+  const r = await app.claimWork({ issueKey: 'APP-122', agent: 'codex', paths: 'src/crypto/keys.ts', repo: 'acme/web' }, as('mei'));
+  assert.equal(r.result, 'PATH_COLLISION');
+  const text = JSON.stringify(r);
+  assert.ok(!text.includes('SEC-1') && !text.includes('signing keys') && !text.includes('confidential'), text);
+  assert.match(r.reasons[0], /a work item you cannot see/);
+  assert.deepEqual(r.collisions[0].paths, ['src/crypto']);
+  // the control tower and the Rovo report too
+  jira.currentUser = 'mei';
+  const tower = await app.resolverHandler('tower', { hours: 24 }, { accountId: 'mei' });
+  assert.ok(!JSON.stringify(tower).includes('SEC-1'));
+  assert.ok(tower.activeLeases.some((l) => l.hidden && l.paths[0] === 'src/crypto'));
+  const st = await app.leaseStatus({}, as('mei'));
+  assert.ok(!JSON.stringify(st).includes('Rotate'));
+  // Yu can see it
+  const mine = await app.leaseStatus({ issueKey: 'SEC-1' }, as('yu'));
+  assert.equal(mine.activeLeases[0].summary, 'Rotate the signing keys after the incident');
+  jira.hiddenFrom = {};
+});

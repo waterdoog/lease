@@ -27,11 +27,16 @@ export const DEFAULT_POLICY = Object.freeze({
   // work item is Done (merged), so the next agent doesn't rebuild the conflict.
   holdUntilMerged: true,
   reviewHoldHours: 72,
+  // 'block': overlapping claims are refused. 'warn': they are granted with a
+  // warning to both sides (a gentler way to start). People, protected paths
+  // and work in progress are always enforced.
+  collisionMode: 'block',
 });
 
 // One record holds every active lease on the site (that is what makes grants
-// linearizable). Keep it far below the Custom Entity value limit.
-export const MAX_ACTIVE_PER_SITE = 150;
+// linearizable). Keep it well below the 240 KiB Custom Entity value limit.
+export const MAX_BOARD_BYTES = 200 * 1024;
+export const boardBytes = (board) => Buffer.byteLength(JSON.stringify(board.leases));
 export const PERSON = 'person';
 export const REVIEW = 'review';
 
@@ -52,6 +57,7 @@ export function resolvePolicy(stored) {
   p.defaultRepo = p.defaultRepo ? normalizeRepo(p.defaultRepo) : '';
   p.holdUntilMerged = p.holdUntilMerged !== false;
   p.reviewHoldHours = int(p.reviewHoldHours, 1, 336, DEFAULT_POLICY.reviewHoldHours);
+  p.collisionMode = p.collisionMode === 'warn' ? 'warn' : 'block';
   return p;
 }
 
@@ -119,7 +125,8 @@ function collisionsWith(board, { repo, patterns, excludeId }, now, policy) {
   for (const l of activeLeases(board, now)) {
     if (l.id === excludeId || l.repo !== repo) continue;
     const all = overlaps(patterns, l.paths);
-    const blocking = all.filter((p) => !isSharedClaim(p.mine, policy) && !isSharedClaim(p.theirs, policy));
+    // Shared files are only shared between agents: a person's reservation is never bypassed.
+    const blocking = l.kind === PERSON ? all : all.filter((p) => !isSharedClaim(p.mine, policy) && !isSharedClaim(p.theirs, policy));
     if (blocking.length) hits.push({ lease: l, pairs: blocking });
     else if (all.length) shared.push({ lease: l, pairs: all });
   }
@@ -132,14 +139,18 @@ function alertSharers(next, hits, lease) {
   for (const h of hits.shared || []) {
     const other = next.leases[h.lease.id];
     if (!other) continue;
-    const msg = `${describeHolder(lease)} also changes shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} for ${lease.issueKey}: keep your changes to them additive.`;
+    const msg = h.warnOnly
+      ? `${describeHolder(lease)} now also works on ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} for ${lease.issueKey}, overlapping your lease. Coordinate before changing the same lines.`
+      : `${describeHolder(lease)} also changes shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} for ${lease.issueKey}: keep your changes to them additive.`;
     next.leases[other.id] = { ...other, alerts: [...(other.alerts || []), msg].slice(-5) };
   }
 }
 
 function sharedNotes(hits) {
-  return (hits.shared || []).map(
-    (h) => `Shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} also in ${h.lease.issueKey} (${describeHolder(h.lease)}): keep your changes additive so git can merge them.`
+  return (hits.shared || []).map((h) =>
+    h.warnOnly
+      ? `Warning: ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} overlaps ${h.lease.issueKey} (${describeHolder(h.lease)}). This project warns instead of refusing; coordinate before changing the same lines.`
+      : `Shared file(s) ${h.pairs.map((p) => `"${p.mine}"`).join(', ')} also in ${h.lease.issueKey} (${describeHolder(h.lease)}): keep your changes additive so git can merge them.`
   );
 }
 
@@ -229,8 +240,6 @@ export function claim(board0, req, ctx) {
     );
   }
 
-  if (activeLeases(board, now).length >= MAX_ACTIVE_PER_SITE)
-    return done(deny('SITE_FULL', [`This site already has ${MAX_ACTIVE_PER_SITE} active leases. Release finished work first.`]));
 
   const mine = activeLeases(board, now).filter((l) => !l.kind && l.agent === agent && l.ownerAccountId === accountId);
   if (mine.length >= policy.maxActivePerAgent)
@@ -250,6 +259,10 @@ export function claim(board0, req, ctx) {
     );
 
   const hits = collisionsWith(board, { repo, patterns }, now, policy);
+  // Warn mode: agent-vs-agent overlaps are allowed with a warning to both sides.
+  if (hits.length && policy.collisionMode === 'warn' && hits.every((h) => h.lease.kind !== PERSON)) {
+    hits.shared = [...(hits.shared || []), ...hits.splice(0).map((h) => ({ ...h, warnOnly: true }))];
+  }
   if (hits.length) {
     const retryAfter = Math.min(...hits.map((h) => h.lease.expiresAt));
     return done(
@@ -294,6 +307,8 @@ export function claim(board0, req, ctx) {
   const next = clone(board);
   next.leases[lease.id] = lease;
   alertSharers(next, hits, lease);
+  if (boardBytes(next) > MAX_BOARD_BYTES)
+    return done(deny('SITE_FULL', ['This site has too many active leases for Lease to track safely. Release finished work, or free paths held for merged pull requests.']));
   return { board: next, expired, decision: { granted: true, code: 'GRANTED', lease, reasons: sharedNotes(hits) } };
 }
 
@@ -437,6 +452,9 @@ export function release(board0, req, ctx) {
     const changed = record.scopeCheck ? parsePathList(req.changedFiles).patterns.filter((f) => lease.paths.some((p) => pathMatches(p, f))) : [];
     const hold = {
       ...lease,
+      intent: '',
+      notes: [],
+      excluded: [],
       kind: REVIEW,
       paths: changed.length ? changed.slice(0, 200) : lease.paths,
       prUrl: record.prUrl,

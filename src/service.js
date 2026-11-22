@@ -221,9 +221,15 @@ export async function revokeLease(input, { accountId }) {
   if (d.granted) {
     await quietly('history', () => store.saveHistory(d.lease));
     await quietly('event', () => store.logEvent({ type: 'revoked', issueKey: d.lease.issueKey, agent: d.lease.agent, by: me.displayName, at: now }));
+    // Simulated agents (from "Simulate two agents") never call again, so they "hear" it at once.
+    const simulated = d.lease.agent.startsWith('sim-');
     if (!d.lease.kind)
       await quietly('tombstone', () =>
-        kvs.set(`revoked:${d.lease.id}`, { leaseId: d.lease.id, issueKey: d.lease.issueKey, agent: d.lease.agent, byName: me.displayName, reason: d.lease.reason, at: now }, { ttl: { unit: 'DAYS', value: 2 } })
+        kvs.set(
+          `revoked:${d.lease.id}`,
+          { leaseId: d.lease.id, issueKey: d.lease.issueKey, agent: d.lease.agent, byName: me.displayName, reason: d.lease.reason, at: now, ...(simulated ? { acknowledgedAt: now } : {}) },
+          { ttl: { unit: 'DAYS', value: 2 } }
+        )
       );
     await quietly('property', () => jira.setLeaseProperty(d.lease.issueKey, leaseProperty(d.lease, 'revoked')));
     await quietly('comment', () =>
@@ -441,6 +447,42 @@ export async function onIssueChanged(issueKey) {
     return 'flagged';
   }
   return 'ok';
+}
+
+// Leases are stored app-wide, but people (and their agents) must only learn
+// about work items they can see. Everything a tool or page returns goes through
+// here: for hidden work items the key, summary, plan, notes and PR are removed;
+// the paths stay, because that is what keeps agents from colliding.
+const KEY_RE = /\b[A-Z][A-Z0-9_]{0,19}-\d{1,9}\b/g;
+const HIDDEN = 'a work item you cannot see';
+
+export async function visibleOnly(output) {
+  if (!output || typeof output !== 'object') return output;
+  const keys = [...new Set(JSON.stringify(output).match(KEY_RE) || [])];
+  if (!keys.length) return output;
+  let visible;
+  try {
+    visible = await jira.visibleKeys(keys);
+  } catch (e) {
+    console.warn(`visibility check failed, hiding all: ${e.message}`);
+    visible = new Set();
+  }
+  const hidden = new Set(keys.filter((k) => !visible.has(k)));
+  if (!hidden.size) return output;
+  const fixText = (t) => t.replace(KEY_RE, (k) => (hidden.has(k) ? HIDDEN : k));
+  const walk = (v) => {
+    if (typeof v === 'string') return fixText(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      if (typeof v.issueKey === 'string' && hidden.has(v.issueKey)) {
+        const { summary, intent, notes, prUrl, pr, whatItDid, lastNote, why, ...rest } = v;
+        return walk({ ...rest, issueKey: '(hidden)', hidden: true });
+      }
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    }
+    return v;
+  };
+  return walk(output);
 }
 
 // Turn a decision into what tools and agents should see: short and actionable.

@@ -30,8 +30,9 @@ for `src/auth/**`; `sim-codex` asks for `src/auth/session.ts` on the refresh-tok
 **refused (PATH_COLLISION)**, then takes the invoice item for `src/billing/**`; a migration is
 checked and **refused (PROTECTED_PATH)**. Open the **Live** tab and the work items: the leases,
 panels and comments are real (they expire in 30 minutes). On the rate-limiting item, click
-**Take back from agent**: the panel shows *Stopping sim-claude* (a simulated agent never checks
-in again, so it stays until the notice expires).
+**Take back from agent**: the lease ends and the panel says the agent was told to stop (with a
+real agent, it shows *Stopping…* until the agent's next call; a simulated agent never calls
+again, so Lease marks the notice as heard at once).
 
 **Reserve by hand.** Open the dark-mode item (people only), enter `src/auth/ui` under *Working on
 this by hand?* and click **Reserve**. A claim on `src/auth/**` by any agent for another item is now
@@ -76,4 +77,4 @@ or *"What can I safely hand to agents in APP?"*.
 * Everything runs on Forge. No external calls, no API keys, nothing to configure besides
   enabling the MCP tools for external clients.
 * MCP tools act with the connecting person's own Jira permissions.
-* Source and tests: `REPO_URL` (`npm test` runs 64 offline tests).
+* Source and tests: `REPO_URL` (`npm test` runs 67 offline tests).

@@ -15,7 +15,7 @@ function issueKeyFrom(payload) {
 
 const wrap = (fn) => async (payload = {}, context = {}) => {
   try {
-    return await fn(payload, { accountId: accountOf(payload, context) });
+    return await svc.visibleOnly(await fn(payload, { accountId: accountOf(payload, context) }));
   } catch (e) {
     console.error(e);
     return { ok: false, error: e.message };
@@ -72,11 +72,11 @@ resolver.define('setAgentReady', async ({ payload, context }) => {
 
 resolver.define('tower', async ({ payload }) => {
   const [st, rep] = await Promise.all([svc.status({ projectKey: payload?.projectKey }), svc.report({ hours: payload?.hours || 24, projectKey: payload?.projectKey })]);
-  return { ...st, report: rep };
+  return svc.visibleOnly({ ...st, report: rep });
 });
 
 resolver.define('dryRun', async ({ payload, context }) =>
-  svc.dryRunClaim({ issueKey: payload.issueKey, agent: payload.agent, paths: payload.paths, repo: payload.repo }, { accountId: context.accountId })
+  svc.visibleOnly(await svc.dryRunClaim({ issueKey: payload.issueKey, agent: payload.agent, paths: payload.paths, repo: payload.repo }, { accountId: context.accountId }))
 );
 resolver.define('createSampleWork', async ({ payload }) => svc.createSampleWork(payload.projectKey));
 

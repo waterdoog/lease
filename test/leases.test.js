@@ -252,12 +252,18 @@ test('release checks the changed files against the lease', () => {
   assert.equal(L.release(a.board, { leaseId: a.decision.lease.id }, ctx()).decision.lease.scopeCheck, null);
 });
 
-test('site-wide cap keeps the lease record small', () => {
+test('the lease record stays under the Custom Entity size limit', () => {
   let b = L.emptyBoard();
-  for (let i = 0; i < L.MAX_ACTIVE_PER_SITE; i++) b = claimOn(b, `APP-${i + 1}`, `pkg${i}`, { agent: `a${i}` }).board;
-  assert.equal(Object.keys(b.leases).length, L.MAX_ACTIVE_PER_SITE);
-  assert.ok(JSON.stringify(b).length < 120 * 1024, 'stays well under the Custom Entity value limit');
-  assert.equal(claimOn(b, 'APP-999', 'other', { agent: 'late' }).decision.code, 'SITE_FULL');
+  let n = 0;
+  let last;
+  for (; n < 2000; n++) {
+    last = claimOn(b, `APP-${n + 1}`, `packages/pkg-${n}/src/**, packages/pkg-${n}/test/**`, { agent: `agent-${n}`, accountId: `p${n}`, repo: 'acme/monorepo' });
+    if (!last.decision.granted) break;
+    b = last.board;
+  }
+  assert.equal(last.decision.code, 'SITE_FULL');
+  assert.ok(n > 200, `holds a realistic number of leases (${n})`);
+  assert.ok(L.boardBytes(b) <= L.MAX_BOARD_BYTES && L.MAX_BOARD_BYTES < 240 * 1024);
 });
 
 test('shared files (package.json, barrel index.ts) never block, but are flagged', () => {
@@ -317,4 +323,23 @@ test('holders of a shared file hear about the other change on their next heartbe
   assert.match(hb.decision.reasons[0], /codex \(for Mei\) also changes shared file\(s\) "package.json" for APP-2/);
   const hb2 = L.heartbeat(hb.board, { leaseId: a.decision.lease.id }, ctx({ now: T0 + 2 * MIN }));
   assert.equal(hb2.decision.reasons.length, 0, 'told once');
+});
+
+test("shared files never bypass a person's reservation", () => {
+  const r = L.reserve(L.emptyBoard(), { issueKey: 'APP-7', paths: 'src/auth', repo: 'acme/web' }, ctx({ accountId: 'sam', ownerName: 'Sam', issue: issue('APP-7') }));
+  const a = claimOn(r.board, 'APP-1', 'src/auth/index.ts', { repo: 'acme/web' });
+  assert.equal(a.decision.code, 'PATH_COLLISION');
+});
+
+test('warn mode grants agent overlaps with a warning to both sides, but never over people', () => {
+  const pol = { collisionMode: 'warn' };
+  const a = claimOn(L.emptyBoard(), 'APP-1', 'src/auth', { repo: 'acme/web', policy: pol });
+  const b = claimOn(a.board, 'APP-2', 'src/auth/session.ts', { agent: 'codex', accountId: 'mei', ownerName: 'Mei', repo: 'acme/web', policy: pol });
+  assert.equal(b.decision.code, 'GRANTED');
+  assert.match(b.decision.reasons[0], /^Warning: "src\/auth\/session.ts" overlaps APP-1/);
+  const hb = L.heartbeat(b.board, { leaseId: a.decision.lease.id }, ctx({ now: T0 + MIN, policy: pol }));
+  assert.match(hb.decision.reasons[0], /now also works on "src\/auth\/session.ts" for APP-2/);
+  const r = L.reserve(L.emptyBoard(), { issueKey: 'APP-7', paths: 'src/x', repo: 'acme/web' }, ctx({ accountId: 'sam', issue: issue('APP-7') }));
+  assert.equal(claimOn(r.board, 'APP-1', 'src/x/y.ts', { repo: 'acme/web', policy: pol }).decision.code, 'PATH_COLLISION');
+  assert.equal(claimOn(L.emptyBoard(), 'APP-1', 'db/migrations/1.sql', { policy: pol }).decision.code, 'PROTECTED_PATH');
 });

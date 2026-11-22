@@ -32,6 +32,16 @@ are changing by hand, take work back with one click, and get a morning report.
 Lease uses all three as they are, and adds the missing piece: **which files each agent
 and person is changing right now, in the tool where the work is planned.**
 
+## Isn't this file locking, which teams abandoned years ago?
+
+Exclusive checkouts failed because they were coarse, manual and permanent: whole files locked
+by default, for days, by people who forgot. Lease is the opposite on each count. Agents explore
+read-only first and claim the smallest paths they will change; shared files (`package.json`,
+lockfiles, barrel files) never block; a lease lasts 30 minutes unless the agent keeps working;
+a handed-off pull request keeps only the exact files it changed; and a project can switch to
+*warn* mode, where overlapping agents are told about each other instead of refused. What stays
+strict is what should: people's work, protected paths, and work in progress.
+
 ## What it does
 
 | | |
@@ -49,7 +59,8 @@ and person is changing right now, in the tool where the work is planned.**
 | **Scope check on hand-off** | `release-work` posts the outcome, summary and PR on the work item, and checks the changed files against the lease: files outside it, or in protected paths, are called out. |
 | **Jira stays the truth** | Moving a work item to Done ends its lease. A person starting leased work is flagged on the work item, once. Leases are mirrored to an issue property (`issue.property[lease].held = true` works in JQL), which keeps the last lease's paths after it ends so CI can check the pull request. |
 | **Morning report** | `agent-report` and the Lease Tower Rovo agent: finished work with PRs, what needs a person (blocked, handed back, expired), collisions prevented. |
-| **Per-project policy** | In each project's settings (and the control tower), admins set the label, default repository, leases per agent, lease length, protected and shared paths, the hold-until-merged rule, and whether in-progress human work is off limits. |
+| **Need to know** | Leases are stored app-wide, but every answer is filtered by what the asking person can see: for work items in projects they cannot open, agents and pages learn only which paths are taken, never the key, summary, plan or pull request. |
+| **Per-project policy** | In each project's settings (and the control tower), admins set the label, default repository, leases per agent, lease length, protected and shared paths, the hold-until-merged rule, block or warn on agent overlaps, and whether in-progress human work is off limits. |
 | **Try it without an agent** | The control tower can add sample work items and run two simulated agents through the real claim code. |
 
 ## How it is built
@@ -81,7 +92,7 @@ and person is changing right now, in the tool where the work is planned.**
 
 ```bash
 npm install
-npm test          # 64 tests, offline, about 3 seconds
+npm test          # 67 tests, offline, about 3 seconds
 ```
 
 * `test/paths.test.js`: glob overlap, including a brute-force oracle over 600 random pattern pairs.
