@@ -123,6 +123,14 @@ npm test          # 75 tests, offline, about 3 seconds
 * UI Kit panel, control tower and simulator render and work in Jira; take-back works end to end.
 * Rovo actions receive the person in `context.principal`; the Lease Tower agent answers from
   live leases.
+* **Real agents, real MCP (22 Nov 2026):** two Claude Code sessions connected to the production
+  app through `mcp.atlassian.com` with the person's OAuth consent. Agent A claimed APP-1 for
+  `src/auth/**`; its write to `src/http/cors.ts` was blocked by the hook, it widened its lease with
+  `addPaths` and the write went through. Agent B asked for `src/auth/session.ts`, got
+  `PATH_COLLISION` naming agent A, and took billing work instead. A person took APP-1 back in Jira;
+  agent A's next heartbeat returned `LEASE_GONE` with the person's name and reason, and it stopped.
+  Agent B committed (the pre-commit guard allowed it), released with its changed files, and Lease
+  posted the hand-off with a clean scope check. Transcript in [docs/live-run.md](docs/live-run.md).
 * Two bugs found only on the live site and fixed: Jira administrators were not treated as
   project administrators on a brand-new project; a project-wide Rovo question was narrowed to
   the work item open on screen.

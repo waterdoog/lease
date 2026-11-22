@@ -232,7 +232,8 @@ function App() {
     });
 
   const pending = stops.filter((s) => !s.acknowledgedAt);
-  const acknowledged = stops.filter((s) => s.acknowledgedAt);
+  // Only recent hand-shakes are news; older ones live in the activity list.
+  const acknowledged = stops.filter((s) => s.acknowledgedAt && now - s.acknowledgedAt < 60 * 60000);
 
   return (
     <Stack space="space.200">
